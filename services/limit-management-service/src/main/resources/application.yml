@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: limit-management-service
+server:
+  port: 8085

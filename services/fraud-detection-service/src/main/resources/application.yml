@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: fraud-detection-service
+server:
+  port: 8083

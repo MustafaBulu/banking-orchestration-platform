@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: payment-command-service
+server:
+  port: 8081

@@ -1,0 +1,5 @@
+spring:
+  application:
+    name: payment-query-service
+server:
+  port: 8082
