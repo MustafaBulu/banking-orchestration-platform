@@ -6,9 +6,6 @@ spring:
     username: ${QUERY_DB_USERNAME:postgres}
     password: ${QUERY_DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
-  flyway:
-    enabled: true
-    locations: classpath:db/migration
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
     consumer:

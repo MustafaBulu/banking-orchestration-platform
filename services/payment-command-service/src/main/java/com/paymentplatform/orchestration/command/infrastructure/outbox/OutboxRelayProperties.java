@@ -9,6 +9,7 @@ public record OutboxRelayProperties(
         int maxRetries,
         long pollDelayMs,
         long baseBackoffMs,
+        long publishTimeoutMs,
         String topic
 ) {
 }

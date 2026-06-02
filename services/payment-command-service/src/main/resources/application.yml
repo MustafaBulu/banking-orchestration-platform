@@ -6,15 +6,24 @@ spring:
     username: ${DB_USERNAME:postgres}
     password: ${DB_PASSWORD:postgres}
     driver-class-name: org.postgresql.Driver
-  flyway:
-    enabled: true
-    locations: classpath:db/migration
   kafka:
     bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
-    producer:
-      key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
 app:
+  resilience:
+    grpc:
+      timeout-ms: ${GRPC_TIMEOUT_MS:700}
+      max-attempts: ${GRPC_MAX_ATTEMPTS:3}
+      wait-duration-ms: ${GRPC_WAIT_DURATION_MS:150}
+      failure-rate-threshold: ${GRPC_CB_FAILURE_RATE_THRESHOLD:50}
+      sliding-window-size: ${GRPC_CB_SLIDING_WINDOW_SIZE:20}
+      minimum-number-of-calls: ${GRPC_CB_MIN_CALLS:10}
+      permitted-calls-in-half-open-state: ${GRPC_CB_HALF_OPEN_CALLS:3}
+      max-concurrent-calls: ${GRPC_BULKHEAD_MAX_CONCURRENT_CALLS:25}
+  grpc:
+    fraud:
+      target: ${FRAUD_GRPC_TARGET:localhost:9091}
+    limit:
+      target: ${LIMIT_GRPC_TARGET:localhost:9092}
   outbox:
     relay:
       enabled: ${OUTBOX_RELAY_ENABLED:true}
@@ -22,6 +31,7 @@ app:
       max-retries: ${OUTBOX_RELAY_MAX_RETRIES:6}
       poll-delay-ms: ${OUTBOX_RELAY_POLL_DELAY_MS:2000}
       base-backoff-ms: ${OUTBOX_RELAY_BASE_BACKOFF_MS:1000}
+      publish-timeout-ms: ${OUTBOX_RELAY_PUBLISH_TIMEOUT_MS:1200}
       topic: ${PAYMENT_EVENTS_TOPIC:payment.domain.events}
 server:
   port: 8081

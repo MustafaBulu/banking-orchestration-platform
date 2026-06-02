@@ -11,6 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.TimeUnit;
 
 @Component
 public class OutboxRelayWorker {
@@ -41,20 +44,28 @@ public class OutboxRelayWorker {
         List<OutboxMessage> messages = outboxJdbcRepository.fetchBatchForUpdate(properties.batchSize());
         for (OutboxMessage message : messages) {
             try {
-                kafkaTemplate.send(properties.topic(), message.eventId(), message.payload()).get();
+                kafkaTemplate.send(properties.topic(), message.eventId(), message.payload())
+                        .get(properties.publishTimeoutMs(), TimeUnit.MILLISECONDS);
                 outboxJdbcRepository.markPublished(message.id());
-            } catch (Exception ex) {
+            } catch (InterruptedException ex) {
+                Thread.currentThread().interrupt();
+                markRetryOrFailed(message, ex);
+            } catch (ExecutionException | TimeoutException ex) {
+                markRetryOrFailed(message, ex);
+            }
+        }
+    }
+
+    private void markRetryOrFailed(OutboxMessage message, Exception ex) {
                 int nextRetryCount = message.retryCount() + 1;
                 if (nextRetryCount >= properties.maxRetries()) {
                     outboxJdbcRepository.markFailed(message.id(), nextRetryCount);
                     log.error("Outbox message marked FAILED after max retries. eventId={}", message.eventId(), ex);
-                    continue;
+                    return;
                 }
                 Duration backoff = calculateBackoff(nextRetryCount);
                 outboxJdbcRepository.markRetry(message.id(), nextRetryCount, backoff);
                 log.warn("Outbox message marked RETRY. eventId={}, retryCount={}", message.eventId(), nextRetryCount, ex);
-            }
-        }
     }
 
     private Duration calculateBackoff(int retryCount) {

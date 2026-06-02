@@ -1,5 +1,8 @@
 spring:
   application:
     name: fraud-detection-service
+app:
+  grpc:
+    port: ${FRAUD_GRPC_PORT:9091}
 server:
   port: 8083

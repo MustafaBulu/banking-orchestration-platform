@@ -12,8 +12,18 @@
     <artifactId>fraud-detection-service</artifactId>
     <dependencies>
         <dependency>
+            <groupId>com.paymentplatform.orchestration</groupId>
+            <artifactId>contracts-grpc</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-webmvc</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-netty-shaded</artifactId>
+            <version>1.74.0</version>
         </dependency>
     </dependencies>
     <build><plugins><plugin><groupId>org.springframework.boot</groupId><artifactId>spring-boot-maven-plugin</artifactId></plugin></plugins></build>

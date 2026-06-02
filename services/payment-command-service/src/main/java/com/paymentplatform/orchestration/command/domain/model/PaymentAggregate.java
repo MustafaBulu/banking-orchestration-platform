@@ -11,22 +11,33 @@ public class PaymentAggregate {
     private final String paymentId;
     private final String customerId;
     private final Money amount;
-    private PaymentStatus status;
+    private final List<PaymentCreatedEvent> uncommittedEvents = new ArrayList<>();
 
-    private PaymentAggregate(String paymentId, String customerId, Money amount, PaymentStatus status) {
+    private PaymentAggregate(String paymentId, String customerId, Money amount) {
         this.paymentId = paymentId;
         this.customerId = customerId;
         this.amount = amount;
-        this.status = status;
+    }
+
+    public static PaymentAggregate create(String paymentId, String customerId, Money amount) {
+        PaymentCreatedEvent event = PaymentCreatedEvent.of(
+                paymentId,
+                customerId,
+                amount.amount(),
+                amount.currency().getCurrencyCode()
+        );
+        PaymentAggregate aggregate = create(event);
+        aggregate.uncommittedEvents.add(event);
+        return aggregate;
     }
 
     public static PaymentAggregate create(PaymentCreatedEvent event) {
         Money money = new Money(event.amount(), Currency.getInstance(event.currency()));
-        return new PaymentAggregate(event.aggregateId(), event.customerId(), money, PaymentStatus.CREATED);
+        return new PaymentAggregate(event.aggregateId(), event.customerId(), money);
     }
 
-    public List<Object> uncommittedEvents() {
-        return new ArrayList<>();
+    public List<PaymentCreatedEvent> uncommittedEvents() {
+        return List.copyOf(uncommittedEvents);
     }
 
     public String paymentId() {
@@ -41,7 +52,4 @@ public class PaymentAggregate {
         return amount;
     }
 
-    public PaymentStatus status() {
-        return status;
-    }
 }

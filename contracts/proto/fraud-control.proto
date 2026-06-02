@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package orchestration.fraud.v1;
+
+option java_package = "com.paymentplatform.orchestration.contracts.fraud.v1";
+option java_multiple_files = true;
+
+service FraudControlService {
+  rpc Evaluate (FraudCheckRequest) returns (FraudCheckResponse);
+}
+
+message FraudCheckRequest {
+  string payment_id = 1;
+  string customer_id = 2;
+  string amount = 3;
+  string currency = 4;
+}
+
+message FraudCheckResponse {
+  bool approved = 1;
+  string reason_code = 2;
+  int32 risk_score = 3;
+}

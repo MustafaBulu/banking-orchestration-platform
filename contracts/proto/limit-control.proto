@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package orchestration.limit.v1;
+
+option java_package = "com.paymentplatform.orchestration.contracts.limit.v1";
+option java_multiple_files = true;
+
+service LimitControlService {
+  rpc Reserve (LimitReserveRequest) returns (LimitReserveResponse);
+}
+
+message LimitReserveRequest {
+  string payment_id = 1;
+  string customer_id = 2;
+  string amount = 3;
+  string currency = 4;
+}
+
+message LimitReserveResponse {
+  bool approved = 1;
+  string reason_code = 2;
+  string reservation_id = 3;
+}

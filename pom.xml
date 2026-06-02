@@ -24,6 +24,7 @@
 
     <modules>
         <module>libs/common-domain</module>
+        <module>libs/contracts-grpc</module>
         <module>services/payment-api-gateway</module>
         <module>services/payment-command-service</module>
         <module>services/payment-query-service</module>
