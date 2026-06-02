@@ -15,7 +15,7 @@ public class LimitGrpcServer implements SmartLifecycle {
     private volatile boolean running;
 
     public LimitGrpcServer(
-            @Value("${app.grpc.port:9092}") int port,
+            @Value("${app.grpc.port:9094}") int port,
             LimitGrpcService limitGrpcService
     ) {
         this.port = port;

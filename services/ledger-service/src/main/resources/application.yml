@@ -1,5 +1,20 @@
 spring:
   application:
     name: ledger-service
+  datasource:
+    url: ${LEDGER_DB_URL:jdbc:postgresql://localhost:5432/payment_ledger}
+    username: ${LEDGER_DB_USERNAME:postgres}
+    password: ${LEDGER_DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: ${LEDGER_CONSUMER_GROUP:ledger-service}
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+app:
+  payment-events:
+    topic: ${PAYMENT_EVENTS_TOPIC:payment.domain.events}
 server:
   port: 8084

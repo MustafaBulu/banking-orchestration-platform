@@ -3,6 +3,6 @@ spring:
     name: limit-management-service
 app:
   grpc:
-    port: ${LIMIT_GRPC_PORT:9092}
+    port: ${LIMIT_GRPC_PORT:9094}
 server:
   port: 8085

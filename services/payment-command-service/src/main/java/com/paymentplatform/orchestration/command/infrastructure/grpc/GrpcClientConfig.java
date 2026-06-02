@@ -17,7 +17,7 @@ public class GrpcClientConfig {
     }
 
     @Bean(destroyMethod = "shutdownNow")
-    public ManagedChannel limitManagedChannel(@Value("${app.grpc.limit.target:localhost:9092}") String target) {
+    public ManagedChannel limitManagedChannel(@Value("${app.grpc.limit.target:localhost:9094}") String target) {
         return ManagedChannelBuilder.forTarget(target).usePlaintext().build();
     }
 

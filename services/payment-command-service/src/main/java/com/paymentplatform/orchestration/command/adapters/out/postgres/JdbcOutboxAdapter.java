@@ -1,10 +1,13 @@
 package com.paymentplatform.orchestration.command.adapters.out.postgres;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paymentplatform.orchestration.command.application.port.out.OutboxPort;
 import com.paymentplatform.orchestration.command.domain.event.PaymentCreatedEvent;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
+import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
@@ -19,35 +22,23 @@ public class JdbcOutboxAdapter implements OutboxPort {
             """;
 
     private final JdbcTemplate jdbcTemplate;
+    private final ObjectMapper objectMapper;
 
-    public JdbcOutboxAdapter(JdbcTemplate jdbcTemplate) {
+    public JdbcOutboxAdapter(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
         this.jdbcTemplate = jdbcTemplate;
+        this.objectMapper = objectMapper;
     }
 
     @Override
     public void enqueue(PaymentCreatedEvent event) {
         Instant now = Instant.now();
-        String payloadJson = """
-                {
-                  "eventId":"%s",
-                  "aggregateId":"%s",
-                  "eventType":"%s",
-                  "occurredAt":"%s",
-                  "data":{
-                    "customerId":"%s",
-                    "amount":%s,
-                    "currency":"%s"
-                  }
-                }
-                """.formatted(
+        String payloadJson = toJson(new PaymentEventEnvelope(
                 event.eventId(),
                 event.aggregateId(),
                 event.eventType(),
                 event.occurredAt(),
-                event.customerId(),
-                event.amount().toPlainString(),
-                event.currency()
-        );
+                new PaymentCreatedPayload(event.customerId(), event.amount(), event.currency())
+        ));
 
         jdbcTemplate.update(
                 INSERT_SQL,
@@ -63,5 +54,25 @@ public class JdbcOutboxAdapter implements OutboxPort {
                 Timestamp.from(now),
                 Timestamp.from(now)
         );
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException ex) {
+            throw new IllegalStateException("Failed to serialize outbox payload", ex);
+        }
+    }
+
+    private record PaymentEventEnvelope(
+            String eventId,
+            String aggregateId,
+            String eventType,
+            Instant occurredAt,
+            PaymentCreatedPayload data
+    ) {
+    }
+
+    private record PaymentCreatedPayload(String customerId, BigDecimal amount, String currency) {
     }
 }
