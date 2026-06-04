@@ -16,7 +16,7 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 - `fraud-detection-service`: synchronous fraud evaluation over gRPC.
 - `limit-management-service`: synchronous limit reservation over gRPC.
 - `ledger-service`: event-driven ledger posting with double-entry accounting records.
-- `notification-service`: reserved module for event-driven customer notifications.
+- `notification-service`: event-driven customer notification record creation.
 - `libs/contracts-grpc`: generated Java gRPC contracts from protobuf files.
 - `libs/common-domain`: shared domain abstractions.
 
@@ -33,7 +33,8 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 7. The outbox relay publishes the event to Kafka.
 8. `payment-query-service` consumes the Kafka event and updates `payment_overview`.
 9. `ledger-service` consumes the same Kafka event and writes balanced debit/credit ledger entries.
-10. A client can query `GET /v1/payments/{paymentId}` through the gateway.
+10. `notification-service` consumes the event and records a customer notification intent.
+11. A client can query `GET /v1/payments/{paymentId}` through the gateway.
 
 The read side is eventually consistent by design.
 
@@ -50,6 +51,7 @@ The read side is eventually consistent by design.
 - Request-level idempotency with `Idempotency-Key`
 - Idempotent query projection using processed event tracking
 - Event-driven ledger posting with idempotent double-entry records
+- Event-driven notification records with processed event tracking
 - Contract-first gRPC for internal fraud and limit checks
 - API Gateway with REST routing
 - Correlation ID propagation
@@ -87,6 +89,7 @@ mvn -pl services/limit-management-service spring-boot:run
 mvn -pl services/payment-command-service spring-boot:run
 mvn -pl services/payment-query-service spring-boot:run
 mvn -pl services/ledger-service spring-boot:run
+mvn -pl services/notification-service spring-boot:run
 mvn -pl services/payment-api-gateway spring-boot:run
 ```
 
@@ -124,13 +127,14 @@ Run command-service tests with dependent modules:
 mvn -pl services/payment-command-service -am test
 ```
 
-Current focused tests cover gRPC resiliency, request idempotency, and ledger posting behavior:
+Current focused tests cover gRPC resiliency, request idempotency, ledger posting, and notification recording behavior:
 
 - timeout fallback
 - retry recovery
 - circuit breaker fast-fail behavior
 - idempotent payment command handling
 - balanced double-entry ledger posting
+- idempotent notification recording
 
 ## Current Scope
 
@@ -142,5 +146,6 @@ This repository currently focuses on the core payment orchestration flow:
 - reliable event publishing
 - read projection
 - ledger posting
+- notification recording
 - gateway access
 - baseline resiliency
