@@ -73,4 +73,14 @@ public class OutboxJdbcRepository {
                 """;
         jdbcTemplate.update(sql, retryCount, id);
     }
+
+    public int countPending() {
+        String sql = """
+                SELECT COUNT(*)
+                FROM outbox
+                WHERE status IN ('NEW', 'RETRY')
+                """;
+        Integer count = jdbcTemplate.queryForObject(sql, Integer.class);
+        return count == null ? 0 : count;
+    }
 }

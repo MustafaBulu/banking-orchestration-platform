@@ -10,6 +10,8 @@ import com.paymentplatform.orchestration.command.domain.exception.PaymentRejecte
 import com.paymentplatform.orchestration.command.domain.event.PaymentCreatedEvent;
 import com.paymentplatform.orchestration.command.domain.model.Money;
 import com.paymentplatform.orchestration.command.domain.model.PaymentAggregate;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -22,17 +24,32 @@ public class CreatePaymentService implements CreatePaymentUseCase {
     private final OutboxPort outboxPort;
     private final FraudCheckPort fraudCheckPort;
     private final LimitCheckPort limitCheckPort;
+    private final Counter paymentsCreatedCounter;
+    private final Counter fraudRejectedCounter;
+    private final Counter limitRejectedCounter;
 
     public CreatePaymentService(
             PaymentEventStorePort paymentEventStorePort,
             OutboxPort outboxPort,
             FraudCheckPort fraudCheckPort,
-            LimitCheckPort limitCheckPort
+            LimitCheckPort limitCheckPort,
+            MeterRegistry meterRegistry
     ) {
         this.paymentEventStorePort = paymentEventStorePort;
         this.outboxPort = outboxPort;
         this.fraudCheckPort = fraudCheckPort;
         this.limitCheckPort = limitCheckPort;
+        this.paymentsCreatedCounter = Counter.builder("payments.created")
+                .description("Accepted payment commands")
+                .register(meterRegistry);
+        this.fraudRejectedCounter = Counter.builder("payments.rejected")
+                .description("Rejected payment commands")
+                .tag("reason", "fraud")
+                .register(meterRegistry);
+        this.limitRejectedCounter = Counter.builder("payments.rejected")
+                .description("Rejected payment commands")
+                .tag("reason", "limit")
+                .register(meterRegistry);
     }
 
     @Override
@@ -42,12 +59,14 @@ public class CreatePaymentService implements CreatePaymentUseCase {
         FraudCheckPort.FraudCheckResult fraudResult =
                 fraudCheckPort.evaluate(command.paymentId(), command.customerId(), money);
         if (!fraudResult.approved()) {
+            fraudRejectedCounter.increment();
             throw new PaymentRejectedException("Fraud check rejected: " + fraudResult.reasonCode());
         }
 
         LimitCheckPort.LimitCheckResult limitResult =
                 limitCheckPort.reserve(command.paymentId(), command.customerId(), money);
         if (!limitResult.approved()) {
+            limitRejectedCounter.increment();
             throw new PaymentRejectedException("Limit check rejected: " + limitResult.reasonCode());
         }
 
@@ -56,9 +75,10 @@ public class CreatePaymentService implements CreatePaymentUseCase {
                 command.customerId(),
                 money
         );
-        PaymentCreatedEvent event = aggregate.uncommittedEvents().get(0);
+        PaymentCreatedEvent event = aggregate.uncommittedEvents().getFirst();
         paymentEventStorePort.append(event);
         outboxPort.enqueue(event);
+        paymentsCreatedCounter.increment();
         return aggregate.paymentId();
     }
 }

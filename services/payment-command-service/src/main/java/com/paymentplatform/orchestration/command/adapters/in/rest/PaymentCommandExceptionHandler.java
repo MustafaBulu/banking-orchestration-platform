@@ -23,9 +23,15 @@ public class PaymentCommandExceptionHandler {
         return new ErrorResponse("IDEMPOTENCY_CONFLICT", ex.getMessage());
     }
 
-    @ExceptionHandler({InvalidIdempotencyKeyException.class, IllegalArgumentException.class})
+    @ExceptionHandler(InvalidIdempotencyKeyException.class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)
-    public ErrorResponse handleBadRequest(RuntimeException ex) {
+    public ErrorResponse handleInvalidIdempotencyKey(InvalidIdempotencyKeyException ex) {
+        return new ErrorResponse("INVALID_IDEMPOTENCY_KEY", ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalArgumentException.class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    public ErrorResponse handleBadRequest(IllegalArgumentException ex) {
         return new ErrorResponse("BAD_REQUEST", ex.getMessage());
     }
 

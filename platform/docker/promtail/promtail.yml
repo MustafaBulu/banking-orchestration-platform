@@ -1,0 +1,29 @@
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: payment-platform-logs
+    pipeline_stages:
+      - regex:
+          source: filename
+          expression: ".*/(?P<service>[a-z-]+-service|payment-api-gateway)\\.log$"
+      - labels:
+          service:
+    static_configs:
+      - targets:
+          - localhost
+        labels:
+          job: payment-platform
+          __path__: /workspace/logs/*.log
+      - targets:
+          - localhost
+        labels:
+          job: payment-platform
+          __path__: /workspace/services/*/logs/*.log

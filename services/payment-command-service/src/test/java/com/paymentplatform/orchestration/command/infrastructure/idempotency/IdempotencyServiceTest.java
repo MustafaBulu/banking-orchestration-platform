@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paymentplatform.orchestration.command.adapters.in.rest.CreatePaymentRequest;
 import com.paymentplatform.orchestration.command.adapters.in.rest.CreatePaymentResponse;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -34,7 +35,7 @@ class IdempotencyServiceTest {
         CreatePaymentRequest request = request();
         mockRecord(jdbcTemplate, hash(request), null);
 
-        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper);
+        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper, new SimpleMeterRegistry());
         CreatePaymentResponse response = service.execute(
                 "key-1",
                 request,
@@ -53,7 +54,7 @@ class IdempotencyServiceTest {
         mockRecord(jdbcTemplate, hash(request), serialize(storedResponse));
 
         AtomicInteger actionCalls = new AtomicInteger();
-        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper);
+        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper, new SimpleMeterRegistry());
 
         CreatePaymentResponse response = service.execute(
                 "key-1",
@@ -74,7 +75,7 @@ class IdempotencyServiceTest {
         JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
         mockRecord(jdbcTemplate, "different-hash", null);
 
-        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper);
+        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper, new SimpleMeterRegistry());
         CreatePaymentRequest request = request();
 
         Executable action = () -> service.execute(

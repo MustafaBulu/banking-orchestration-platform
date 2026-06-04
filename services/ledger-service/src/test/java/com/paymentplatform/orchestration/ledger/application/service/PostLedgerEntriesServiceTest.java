@@ -3,6 +3,7 @@ package com.paymentplatform.orchestration.ledger.application.service;
 import com.paymentplatform.orchestration.ledger.application.port.out.LedgerEntryRepository;
 import com.paymentplatform.orchestration.ledger.domain.model.LedgerEntry;
 import com.paymentplatform.orchestration.ledger.domain.model.LedgerEntryType;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -29,7 +30,7 @@ class PostLedgerEntriesServiceTest {
     @Test
     void shouldCreateBalancedDoubleEntryLedgerPosting() {
         FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
-        PostLedgerEntriesService service = new PostLedgerEntriesService(repository);
+        PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
 
         service.postPaymentCreated(PAYMENT_CREATED_EVENT);
 
@@ -42,7 +43,7 @@ class PostLedgerEntriesServiceTest {
     @Test
     void shouldNotCreateDuplicateEntriesForAlreadyProcessedEvent() {
         FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
-        PostLedgerEntriesService service = new PostLedgerEntriesService(repository);
+        PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
 
         service.postPaymentCreated(PAYMENT_CREATED_EVENT);
         service.postPaymentCreated(PAYMENT_CREATED_EVENT);

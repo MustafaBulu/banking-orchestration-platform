@@ -23,7 +23,7 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 ## Payment Flow
 
 1. A client sends `POST /v1/payments` to `payment-api-gateway`.
-2. The gateway forwards the request to `payment-command-service` and propagates `X-Correlation-Id`.
+2. The gateway forwards the request to `payment-command-service` and propagates `X-Correlation-Id` and `Idempotency-Key`.
 3. `payment-command-service` performs synchronous checks:
    - fraud check via `fraud-detection-service` gRPC
    - limit reservation via `limit-management-service` gRPC
@@ -48,7 +48,7 @@ The read side is eventually consistent by design.
 - PostgreSQL event store
 - Transactional outbox pattern
 - Kafka-based asynchronous event publishing
-- Request-level idempotency with `Idempotency-Key`
+- Required request-level idempotency with `Idempotency-Key` for payment creation
 - Idempotent query projection using processed event tracking
 - Event-driven ledger posting with idempotent double-entry records
 - Event-driven notification records with processed event tracking
@@ -56,6 +56,10 @@ The read side is eventually consistent by design.
 - API Gateway with REST routing
 - Correlation ID propagation
 - In-memory gateway rate limiting
+- Spring Actuator health and Prometheus metrics endpoints
+- Prometheus, Grafana, OpenTelemetry Collector, Tempo, Loki, and Promtail based local observability foundation
+- Provisioned Grafana dashboard for service health, payment outcomes, outbox, downstream processing, and logs
+- Domain-level metrics for payments, idempotency, outbox publishing, ledger posting, and notifications
 - Resiliency patterns:
   - timeout
   - retry
@@ -112,6 +116,42 @@ Query the payment after a short delay:
 ```http
 GET http://localhost:8080/v1/payments/{paymentId}
 ```
+
+## Observability
+
+Each service exposes operational endpoints through Spring Actuator:
+
+```http
+GET /actuator/health
+GET /actuator/prometheus
+```
+
+Prometheus, Grafana, OpenTelemetry Collector, Tempo, Loki, and Promtail are included in the local Docker runtime:
+
+```text
+Prometheus:              http://localhost:9090
+Grafana:                 http://localhost:3000
+Tempo:                   http://localhost:3200
+Loki:                    http://localhost:3100
+OpenTelemetry Collector: http://localhost:4318/v1/traces
+```
+
+Grafana is provisioned with Prometheus, Tempo, and Loki datasources plus a `Payment Platform Overview`
+dashboard. The local Prometheus configuration scrapes services running on the host machine through
+`host.docker.internal`. Services export traces to the OpenTelemetry Collector over OTLP, and the
+collector forwards them to Tempo. Application logs are written to local `logs/*.log` files and
+Promtail forwards them to Loki. Logs include `traceId` and `spanId` fields for trace-log correlation.
+
+Selected domain metrics:
+
+- `payments_created_total`
+- `payments_rejected_total`
+- `idempotency_hit_total`
+- `outbox_pending`
+- `outbox_published_total`
+- `outbox_publish_failed_total`
+- `ledger_entries_posted_total`
+- `notifications_recorded_total`
 
 ## Testing
 

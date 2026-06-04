@@ -1,5 +1,6 @@
 package com.paymentplatform.orchestration.gateway.adapters.in.rest;
 
+import com.paymentplatform.orchestration.common.api.ApiHeaders;
 import com.paymentplatform.orchestration.gateway.config.GatewayProperties;
 import com.paymentplatform.orchestration.gateway.infrastructure.RequestContextFilter;
 import jakarta.servlet.http.HttpServletRequest;
@@ -36,6 +37,7 @@ public class PaymentGatewayController {
             String responseBody = webClient.post()
                     .uri(properties.commandBaseUrl() + "/v1/payments")
                     .header(RequestContextFilter.CORRELATION_ID_HEADER, correlationId)
+                    .headers(headers -> addIdempotencyKeyIfPresent(headers, request.getHeader(ApiHeaders.idempotencyKey())))
                     .contentType(MediaType.APPLICATION_JSON)
                     .bodyValue(body)
                     .retrieve()
@@ -72,5 +74,11 @@ public class PaymentGatewayController {
     @GetMapping("/_health")
     public Map<String, String> health() {
         return Map.of("status", "UP");
+    }
+
+    private void addIdempotencyKeyIfPresent(org.springframework.http.HttpHeaders headers, String value) {
+        if (value != null && !value.isBlank()) {
+            headers.set(ApiHeaders.idempotencyKey(), value);
+        }
     }
 }

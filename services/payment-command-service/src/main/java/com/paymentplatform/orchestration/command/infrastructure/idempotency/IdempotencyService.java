@@ -2,6 +2,8 @@ package com.paymentplatform.orchestration.command.infrastructure.idempotency;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -24,10 +26,18 @@ public class IdempotencyService {
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final Counter idempotencyHitCounter;
+    private final Counter idempotencyConflictCounter;
 
-    public IdempotencyService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+    public IdempotencyService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, MeterRegistry meterRegistry) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.idempotencyHitCounter = Counter.builder("idempotency.hit")
+                .description("Idempotency requests served from a stored response")
+                .register(meterRegistry);
+        this.idempotencyConflictCounter = Counter.builder("idempotency.conflict")
+                .description("Idempotency key reuse with a different request body")
+                .register(meterRegistry);
     }
 
     @Transactional
@@ -49,9 +59,11 @@ public class IdempotencyService {
                 .orElseThrow(() -> new IllegalStateException("Idempotency key was not persisted"));
 
         if (!idempotencyRecord.requestHash().equals(requestHash)) {
+            idempotencyConflictCounter.increment();
             throw new IdempotencyConflictException("Idempotency-Key was already used with a different request body");
         }
         if (idempotencyRecord.responseBody() != null) {
+            idempotencyHitCounter.increment();
             return readResponse(idempotencyRecord.responseBody(), responseType);
         }
 

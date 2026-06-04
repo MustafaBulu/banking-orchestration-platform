@@ -2,6 +2,8 @@ package com.paymentplatform.orchestration.ledger.application.service;
 
 import com.paymentplatform.orchestration.ledger.application.port.out.LedgerEntryRepository;
 import com.paymentplatform.orchestration.ledger.domain.model.LedgerPosting;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -11,9 +13,13 @@ public class PostLedgerEntriesService {
     private static final String CONSUMER_NAME = "ledger-service";
 
     private final LedgerEntryRepository ledgerEntryRepository;
+    private final Counter ledgerEntriesPostedCounter;
 
-    public PostLedgerEntriesService(LedgerEntryRepository ledgerEntryRepository) {
+    public PostLedgerEntriesService(LedgerEntryRepository ledgerEntryRepository, MeterRegistry meterRegistry) {
         this.ledgerEntryRepository = ledgerEntryRepository;
+        this.ledgerEntriesPostedCounter = Counter.builder("ledger.entries.posted")
+                .description("Ledger entries posted from payment events")
+                .register(meterRegistry);
     }
 
     @Transactional
@@ -33,5 +39,6 @@ public class PostLedgerEntriesService {
 
         ledgerEntryRepository.saveEntries(posting.entries());
         ledgerEntryRepository.markProcessed(event.eventId(), CONSUMER_NAME);
+        ledgerEntriesPostedCounter.increment(posting.entries().size());
     }
 }

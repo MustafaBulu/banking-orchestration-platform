@@ -4,6 +4,7 @@ import com.paymentplatform.orchestration.notification.application.port.out.Notif
 import com.paymentplatform.orchestration.notification.domain.model.NotificationChannel;
 import com.paymentplatform.orchestration.notification.domain.model.NotificationRecord;
 import com.paymentplatform.orchestration.notification.domain.model.NotificationStatus;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
@@ -27,7 +28,7 @@ class RecordNotificationServiceTest {
     @Test
     void shouldRecordNotificationForPaymentCreatedEvent() {
         FakeNotificationRepository repository = new FakeNotificationRepository();
-        RecordNotificationService service = new RecordNotificationService(repository);
+        RecordNotificationService service = new RecordNotificationService(repository, new SimpleMeterRegistry());
 
         service.recordPaymentCreated(PAYMENT_CREATED_EVENT);
 
@@ -44,7 +45,7 @@ class RecordNotificationServiceTest {
     @Test
     void shouldNotRecordDuplicateNotificationForAlreadyProcessedEvent() {
         FakeNotificationRepository repository = new FakeNotificationRepository();
-        RecordNotificationService service = new RecordNotificationService(repository);
+        RecordNotificationService service = new RecordNotificationService(repository, new SimpleMeterRegistry());
 
         service.recordPaymentCreated(PAYMENT_CREATED_EVENT);
         service.recordPaymentCreated(PAYMENT_CREATED_EVENT);
