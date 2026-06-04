@@ -1,0 +1,60 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-api-gateway
+  labels:
+    app: payment-api-gateway
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-api-gateway
+  template:
+    metadata:
+      labels:
+        app: payment-api-gateway
+    spec:
+      containers:
+        - name: payment-api-gateway
+          image: banking-orchestration-platform/payment-api-gateway:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: payment-platform-config
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 45
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-api-gateway
+  labels:
+    app: payment-api-gateway
+spec:
+  type: LoadBalancer
+  selector:
+    app: payment-api-gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

@@ -11,6 +11,11 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./postgres/init:/docker-entrypoint-initdb.d
+      - ./postgres/pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command:
+      - "postgres"
+      - "-c"
+      - "hba_file=/etc/postgresql/pg_hba.conf"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 10s
@@ -34,8 +39,10 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
@@ -44,10 +51,172 @@ services:
     depends_on:
       - zookeeper
     healthcheck:
-      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:9092 --list > /dev/null 2>&1"]
+      test: ["CMD-SHELL", "kafka-topics --bootstrap-server localhost:29092 --list > /dev/null 2>&1"]
       interval: 15s
       timeout: 10s
       retries: 10
+
+  payment-api-gateway:
+    build:
+      context: ../../services/payment-api-gateway
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/payment-api-gateway:latest
+    container_name: pop-payment-api-gateway
+    ports:
+      - "8080:8080"
+    environment:
+      COMMAND_SERVICE_BASE_URL: http://payment-command-service:8081
+      QUERY_SERVICE_BASE_URL: http://payment-query-service:8082
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/payment-api-gateway.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      - payment-command-service
+      - payment-query-service
+      - otel-collector
+
+  payment-command-service:
+    build:
+      context: ../../services/payment-command-service
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/payment-command-service:latest
+    container_name: pop-payment-command-service
+    ports:
+      - "8081:8081"
+    environment:
+      DB_URL: jdbc:postgresql://postgres:5432/payment_command
+      DB_USERNAME: postgres
+      DB_PASSWORD: postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      FRAUD_GRPC_TARGET: fraud-detection-service:9091
+      LIMIT_GRPC_TARGET: limit-management-service:9094
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/payment-command-service.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      fraud-detection-service:
+        condition: service_started
+      limit-management-service:
+        condition: service_started
+      otel-collector:
+        condition: service_started
+
+  payment-query-service:
+    build:
+      context: ../../services/payment-query-service
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/payment-query-service:latest
+    container_name: pop-payment-query-service
+    ports:
+      - "8082:8082"
+    environment:
+      QUERY_DB_URL: jdbc:postgresql://postgres:5432/payment_query
+      QUERY_DB_USERNAME: postgres
+      QUERY_DB_PASSWORD: postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/payment-query-service.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  fraud-detection-service:
+    build:
+      context: ../../services/fraud-detection-service
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/fraud-detection-service:latest
+    container_name: pop-fraud-detection-service
+    ports:
+      - "8083:8083"
+      - "9091:9091"
+    environment:
+      FRAUD_GRPC_PORT: 9091
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/fraud-detection-service.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      - otel-collector
+
+  ledger-service:
+    build:
+      context: ../../services/ledger-service
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/ledger-service:latest
+    container_name: pop-ledger-service
+    ports:
+      - "8084:8084"
+    environment:
+      LEDGER_DB_URL: jdbc:postgresql://postgres:5432/payment_ledger
+      LEDGER_DB_USERNAME: postgres
+      LEDGER_DB_PASSWORD: postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/ledger-service.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
+
+  limit-management-service:
+    build:
+      context: ../../services/limit-management-service
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/limit-management-service:latest
+    container_name: pop-limit-management-service
+    ports:
+      - "8085:8085"
+      - "9094:9094"
+    environment:
+      LIMIT_GRPC_PORT: 9094
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/limit-management-service.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      - otel-collector
+
+  notification-service:
+    build:
+      context: ../../services/notification-service
+      dockerfile: Dockerfile
+    image: banking-orchestration-platform/notification-service:latest
+    container_name: pop-notification-service
+    ports:
+      - "8086:8086"
+    environment:
+      NOTIFICATION_DB_URL: jdbc:postgresql://postgres:5432/payment_notification
+      NOTIFICATION_DB_USERNAME: postgres
+      NOTIFICATION_DB_PASSWORD: postgres
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+      LOG_FILE: /app/logs/notification-service.log
+    volumes:
+      - ../../logs:/app/logs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   prometheus:
     image: prom/prometheus:v2.54.1

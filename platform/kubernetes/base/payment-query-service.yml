@@ -1,0 +1,61 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: payment-query-service
+  labels:
+    app: payment-query-service
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: payment-query-service
+  template:
+    metadata:
+      labels:
+        app: payment-query-service
+    spec:
+      containers:
+        - name: payment-query-service
+          image: banking-orchestration-platform/payment-query-service:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8082
+          envFrom:
+            - configMapRef:
+                name: payment-platform-config
+            - secretRef:
+                name: payment-platform-secrets
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 25
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 150m
+              memory: 384Mi
+            limits:
+              cpu: 750m
+              memory: 768Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: payment-query-service
+  labels:
+    app: payment-query-service
+spec:
+  selector:
+    app: payment-query-service
+  ports:
+    - name: http
+      port: 8082
+      targetPort: http

@@ -1,0 +1,41 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: payment-platform-config
+data:
+  COMMAND_SERVICE_BASE_URL: http://payment-command-service:8081
+  QUERY_SERVICE_BASE_URL: http://payment-query-service:8082
+  GATEWAY_TIMEOUT_MS: "1200"
+  GATEWAY_RATE_LIMIT_PER_MINUTE: "120"
+
+  DB_URL: jdbc:postgresql://postgres:5432/payment_command
+  QUERY_DB_URL: jdbc:postgresql://postgres:5432/payment_query
+  LEDGER_DB_URL: jdbc:postgresql://postgres:5432/payment_ledger
+  NOTIFICATION_DB_URL: jdbc:postgresql://postgres:5432/payment_notification
+
+  KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+  PAYMENT_EVENTS_TOPIC: payment.domain.events
+
+  FRAUD_GRPC_TARGET: fraud-detection-service:9091
+  LIMIT_GRPC_TARGET: limit-management-service:9094
+  FRAUD_GRPC_PORT: "9091"
+  LIMIT_GRPC_PORT: "9094"
+
+  GRPC_TIMEOUT_MS: "700"
+  GRPC_MAX_ATTEMPTS: "3"
+  GRPC_WAIT_DURATION_MS: "150"
+  GRPC_CB_FAILURE_RATE_THRESHOLD: "50"
+  GRPC_CB_SLIDING_WINDOW_SIZE: "20"
+  GRPC_CB_MIN_CALLS: "10"
+  GRPC_CB_HALF_OPEN_CALLS: "3"
+  GRPC_BULKHEAD_MAX_CONCURRENT_CALLS: "25"
+
+  OUTBOX_RELAY_ENABLED: "true"
+  OUTBOX_RELAY_BATCH_SIZE: "50"
+  OUTBOX_RELAY_MAX_RETRIES: "6"
+  OUTBOX_RELAY_POLL_DELAY_MS: "2000"
+  OUTBOX_RELAY_BASE_BACKOFF_MS: "1000"
+  OUTBOX_RELAY_PUBLISH_TIMEOUT_MS: "1200"
+
+  TRACING_SAMPLING_PROBABILITY: "1.0"
+  OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces

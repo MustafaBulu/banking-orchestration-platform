@@ -60,6 +60,9 @@ The read side is eventually consistent by design.
 - Prometheus, Grafana, OpenTelemetry Collector, Tempo, Loki, and Promtail based local observability foundation
 - Provisioned Grafana dashboard for service health, payment outcomes, outbox, downstream processing, and logs
 - Domain-level metrics for payments, idempotency, outbox publishing, ledger posting, and notifications
+- Service Dockerfiles for container image builds
+- Minimal Kubernetes deployment manifests with Service-based discovery and load balancing
+- GitHub Actions CI for Maven build, tests, Docker image builds, and deployment manifest validation
 - Resiliency patterns:
   - timeout
   - retry
@@ -79,23 +82,18 @@ The `libs/contracts-grpc` module generates Java stubs from these contracts.
 
 ## Local Runtime
 
-Start infrastructure:
+Build the service JARs and start the full Docker runtime:
 
 ```bash
-docker compose -f platform/docker/docker-compose.yml up -d
+mvn clean package
+docker compose -f platform/docker/docker-compose.yml up -d --build
 ```
 
-Run required services:
+The stack starts PostgreSQL, Kafka, observability components, and all application services.
+The API gateway is exposed at `http://localhost:8080`.
 
-```bash
-mvn -pl services/fraud-detection-service spring-boot:run
-mvn -pl services/limit-management-service spring-boot:run
-mvn -pl services/payment-command-service spring-boot:run
-mvn -pl services/payment-query-service spring-boot:run
-mvn -pl services/ledger-service spring-boot:run
-mvn -pl services/notification-service spring-boot:run
-mvn -pl services/payment-api-gateway spring-boot:run
-```
+For IDE debugging, individual services can still be started with Maven against the same local
+PostgreSQL and Kafka dependencies.
 
 Create a payment:
 
@@ -117,6 +115,33 @@ Query the payment after a short delay:
 GET http://localhost:8080/v1/payments/{paymentId}
 ```
 
+## Container Images
+
+Each Spring Boot service includes a Dockerfile that packages the built JAR into a Java 21 runtime image.
+
+Example:
+
+```bash
+mvn clean package
+docker build -f services/payment-api-gateway/Dockerfile -t payment-api-gateway:local services/payment-api-gateway
+```
+
+## Kubernetes
+
+Minimal deployment manifests are stored in `platform/kubernetes/base`.
+
+```bash
+kubectl apply -k platform/kubernetes/base
+```
+
+The Kubernetes setup uses native `Service` objects for internal service discovery and load balancing.
+For example, `payment-api-gateway` calls `payment-command-service` through the stable
+`http://payment-command-service:8081` DNS name. This keeps discovery Kubernetes-native instead of
+adding a separate registry such as Eureka.
+
+The included `Secret` manifest uses demo local credentials only; production deployments should replace
+it with externally managed secrets.
+
 ## Observability
 
 Each service exposes operational endpoints through Spring Actuator:
@@ -137,10 +162,10 @@ OpenTelemetry Collector: http://localhost:4318/v1/traces
 ```
 
 Grafana is provisioned with Prometheus, Tempo, and Loki datasources plus a `Payment Platform Overview`
-dashboard. The local Prometheus configuration scrapes services running on the host machine through
-`host.docker.internal`. Services export traces to the OpenTelemetry Collector over OTLP, and the
-collector forwards them to Tempo. Application logs are written to local `logs/*.log` files and
-Promtail forwards them to Loki. Logs include `traceId` and `spanId` fields for trace-log correlation.
+dashboard. The local Prometheus configuration scrapes service containers through Docker service DNS.
+Services export traces to the OpenTelemetry Collector over OTLP, and the collector forwards them to
+Tempo. Application logs are written to local `logs/*.log` files and Promtail forwards them to Loki.
+Logs include `traceId` and `spanId` fields for trace-log correlation.
 
 Selected domain metrics:
 
@@ -175,6 +200,15 @@ Current focused tests cover gRPC resiliency, request idempotency, ledger posting
 - idempotent payment command handling
 - balanced double-entry ledger posting
 - idempotent notification recording
+
+## CI/CD
+
+GitHub Actions runs the main quality gate on pushes and pull requests:
+
+- Maven build and tests
+- Docker Compose configuration validation
+- service container image builds
+- Kubernetes manifest rendering with Kustomize
 
 ## Current Scope
 

@@ -1,0 +1,16 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: payment-platform
+
+resources:
+  - namespace.yml
+  - configmap.yml
+  - secret.yml
+  - payment-api-gateway.yml
+  - payment-command-service.yml
+  - payment-query-service.yml
+  - fraud-detection-service.yml
+  - limit-management-service.yml
+  - ledger-service.yml
+  - notification-service.yml
