@@ -33,3 +33,6 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### Local planning docs ###
+IMPROVEMENT-PLAN.md

@@ -180,7 +180,10 @@ Selected domain metrics:
 
 ## Testing
 
-Run the full build:
+The suite has two layers: fast unit tests, and Testcontainers-based integration tests that prove
+the core correctness claims against real PostgreSQL and Kafka.
+
+Run the full build (unit + integration):
 
 ```bash
 mvn clean package
@@ -192,7 +195,33 @@ Run command-service tests with dependent modules:
 mvn -pl services/payment-command-service -am test
 ```
 
-Current focused tests cover gRPC resiliency, request idempotency, ledger posting, and notification recording behavior:
+The integration tests start real PostgreSQL and Kafka containers via Testcontainers. They run under
+`mvn test` when Docker is available and skip cleanly when it is not
+(`@Testcontainers(disabledWithoutDocker = true)`), so the build stays green on machines without
+Docker while executing on Docker-equipped CI runners.
+
+### What is proven (and by which test)
+
+- Outbox atomicity and relay — `OutboxAtomicityAndRelayIntegrationTest` (payment-command-service):
+  creating a payment writes the `event_store` row and the `outbox` row, the relay publishes the
+  event to Kafka and marks the outbox row `PUBLISHED`, and a real Kafka consumer receives the event
+  keyed by its `eventId`.
+- Consumer idempotency under real duplicate delivery — `LedgerConsumerIdempotencyIntegrationTest`
+  (ledger-service): delivering the same `PaymentCreated` event twice results in exactly one ledger
+  posting — two balanced entries and a single processed-event record.
+- Required idempotency-key replay — `IdempotencyKeyReplayIntegrationTest` (payment-command-service):
+  the same `Idempotency-Key` with the same body creates one payment and replays the stored response,
+  while the same key with a different body returns `409 Conflict`.
+- Wiring against real infrastructure — `ContextLoadsIntegrationTest` (command and ledger): each
+  service boots against real PostgreSQL (Flyway migrations applied) and Kafka.
+
+These tests assert exact-count invariants (one posting, one payment, one outbox row) rather than
+mere presence, so a regression surfaces as a failure — for example, removing the outbox write makes
+the outbox atomicity test fail.
+
+### Unit tests
+
+Unit tests cover gRPC resiliency and lower-level behavior:
 
 - timeout fallback
 - retry recovery
