@@ -4,18 +4,14 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
-import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
-import java.sql.Timestamp;
+import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
 import java.util.HexFormat;
-import java.util.Optional;
 import java.util.function.Supplier;
 
 @Service
@@ -23,14 +19,15 @@ public class IdempotencyService {
 
     private static final int MAX_KEY_LENGTH = 128;
     private static final int ACCEPTED_STATUS_CODE = 202;
+    private static final Duration RETENTION = Duration.ofHours(24);
 
-    private final JdbcTemplate jdbcTemplate;
+    private final IdempotencyStore store;
     private final ObjectMapper objectMapper;
     private final Counter idempotencyHitCounter;
     private final Counter idempotencyConflictCounter;
 
-    public IdempotencyService(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper, MeterRegistry meterRegistry) {
-        this.jdbcTemplate = jdbcTemplate;
+    public IdempotencyService(IdempotencyStore store, ObjectMapper objectMapper, MeterRegistry meterRegistry) {
+        this.store = store;
         this.objectMapper = objectMapper;
         this.idempotencyHitCounter = Counter.builder("idempotency.hit")
                 .description("Idempotency requests served from a stored response")
@@ -40,44 +37,34 @@ public class IdempotencyService {
                 .register(meterRegistry);
     }
 
-    @Transactional
     public <T> T execute(String idempotencyKey, Object request, Class<T> responseType, Supplier<T> action) {
         String normalizedKey = normalize(idempotencyKey);
         String requestHash = requestHash(request);
 
-        jdbcTemplate.update("""
-                INSERT INTO idempotency_key (idempotency_key, request_hash, expires_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT (idempotency_key) DO NOTHING
-                """,
-                normalizedKey,
-                requestHash,
-                Timestamp.from(Instant.now().plus(24, ChronoUnit.HOURS))
-        );
-
-        IdempotencyRecord idempotencyRecord = findForUpdate(normalizedKey)
-                .orElseThrow(() -> new IllegalStateException("Idempotency key was not persisted"));
-
-        if (!idempotencyRecord.requestHash().equals(requestHash)) {
-            idempotencyConflictCounter.increment();
-            throw new IdempotencyConflictException("Idempotency-Key was already used with a different request body");
-        }
-        if (idempotencyRecord.responseBody() != null) {
-            idempotencyHitCounter.increment();
-            return readResponse(idempotencyRecord.responseBody(), responseType);
+        IdempotencyStore.Claim claim = store.claim(normalizedKey, requestHash, Instant.now().plus(RETENTION));
+        switch (claim.state()) {
+            case REPLAY -> {
+                idempotencyHitCounter.increment();
+                return readResponse(claim.responseBody(), responseType);
+            }
+            case CONFLICT -> {
+                idempotencyConflictCounter.increment();
+                throw new IdempotencyConflictException("Idempotency-Key was already used with a different request body");
+            }
+            case IN_PROGRESS -> throw new IdempotencyInProgressException(
+                    "A request with this Idempotency-Key is still being processed");
+            case OWNED -> {
+            }
         }
 
-        T response = action.get();
-        jdbcTemplate.update("""
-                UPDATE idempotency_key
-                SET response_body = CAST(? AS jsonb),
-                    status_code = ?
-                WHERE idempotency_key = ?
-                """,
-                writeResponse(response),
-                ACCEPTED_STATUS_CODE,
-                normalizedKey
-        );
+        T response;
+        try {
+            response = action.get();
+        } catch (RuntimeException ex) {
+            store.discard(normalizedKey);
+            throw ex;
+        }
+        store.recordResponse(normalizedKey, writeResponse(response), ACCEPTED_STATUS_CODE);
         return response;
     }
 
@@ -90,23 +77,6 @@ public class IdempotencyService {
             throw new InvalidIdempotencyKeyException("Idempotency-Key must be at most 128 characters");
         }
         return normalized;
-    }
-
-    private Optional<IdempotencyRecord> findForUpdate(String idempotencyKey) {
-        return jdbcTemplate.query("""
-                SELECT request_hash, response_body::text
-                FROM idempotency_key
-                WHERE idempotency_key = ?
-                FOR UPDATE
-                """, rs -> {
-            if (!rs.next()) {
-                return Optional.empty();
-            }
-            return Optional.of(new IdempotencyRecord(
-                    rs.getString("request_hash"),
-                    rs.getString("response_body")
-            ));
-        }, idempotencyKey);
     }
 
     private String requestHash(Object request) {
@@ -135,8 +105,5 @@ public class IdempotencyService {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to deserialize idempotent response", ex);
         }
-    }
-
-    private record IdempotencyRecord(String requestHash, String responseBody) {
     }
 }

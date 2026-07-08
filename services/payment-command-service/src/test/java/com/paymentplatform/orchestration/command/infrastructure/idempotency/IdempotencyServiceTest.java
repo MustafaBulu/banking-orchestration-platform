@@ -7,58 +7,54 @@ import com.paymentplatform.orchestration.command.adapters.in.rest.CreatePaymentR
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.function.Executable;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.jdbc.core.ResultSetExtractor;
 
 import java.math.BigDecimal;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-import java.sql.ResultSet;
-import java.util.HexFormat;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class IdempotencyServiceTest {
 
     private final ObjectMapper objectMapper = new ObjectMapper().findAndRegisterModules();
+    private final IdempotencyStore store = mock(IdempotencyStore.class);
+    private final IdempotencyService service =
+            new IdempotencyService(store, objectMapper, new SimpleMeterRegistry());
 
     @Test
-    void shouldExecuteActionAndStoreResponseForNewKey() {
-        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
-        CreatePaymentRequest request = request();
-        mockRecord(jdbcTemplate, hash(request), null);
+    void shouldExecuteActionAndStoreResponseWhenKeyIsOwned() {
+        when(store.claim(anyString(), anyString(), any()))
+                .thenReturn(new IdempotencyStore.Claim(IdempotencyStore.State.OWNED, null));
 
-        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper, new SimpleMeterRegistry());
         CreatePaymentResponse response = service.execute(
                 "key-1",
-                request,
+                request(),
                 CreatePaymentResponse.class,
                 () -> new CreatePaymentResponse("payment-1", "CREATED")
         );
 
         assertEquals("payment-1", response.paymentId());
+        verify(store).recordResponse(eq("key-1"), anyString(), anyInt());
     }
 
     @Test
-    void shouldReturnStoredResponseForSameKeyAndRequestBody() {
-        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
-        CreatePaymentRequest request = request();
-        CreatePaymentResponse storedResponse = new CreatePaymentResponse("payment-1", "CREATED");
-        mockRecord(jdbcTemplate, hash(request), serialize(storedResponse));
+    void shouldReturnStoredResponseWithoutRunningActionOnReplay() {
+        CreatePaymentResponse stored = new CreatePaymentResponse("payment-1", "CREATED");
+        when(store.claim(anyString(), anyString(), any()))
+                .thenReturn(new IdempotencyStore.Claim(IdempotencyStore.State.REPLAY, serialize(stored)));
 
         AtomicInteger actionCalls = new AtomicInteger();
-        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper, new SimpleMeterRegistry());
-
         CreatePaymentResponse response = service.execute(
                 "key-1",
-                request,
+                request(),
                 CreatePaymentResponse.class,
                 () -> {
                     actionCalls.incrementAndGet();
@@ -68,37 +64,58 @@ class IdempotencyServiceTest {
 
         assertEquals("payment-1", response.paymentId());
         assertEquals(0, actionCalls.get());
+        verify(store, never()).recordResponse(anyString(), anyString(), anyInt());
     }
 
     @Test
     void shouldRejectSameKeyWithDifferentRequestBody() {
-        JdbcTemplate jdbcTemplate = mock(JdbcTemplate.class);
-        mockRecord(jdbcTemplate, "different-hash", null);
-
-        IdempotencyService service = new IdempotencyService(jdbcTemplate, objectMapper, new SimpleMeterRegistry());
-        CreatePaymentRequest request = request();
+        when(store.claim(anyString(), anyString(), any()))
+                .thenReturn(new IdempotencyStore.Claim(IdempotencyStore.State.CONFLICT, null));
 
         Executable action = () -> service.execute(
                 "key-1",
-                request,
+                request(),
                 CreatePaymentResponse.class,
                 () -> new CreatePaymentResponse("payment-1", "CREATED")
         );
         assertThrows(IdempotencyConflictException.class, action);
     }
 
-    private CreatePaymentRequest request() {
-        return new CreatePaymentRequest("customer-1", new BigDecimal("120.50"), "EUR");
+    @Test
+    void shouldRejectConcurrentInFlightRequest() {
+        when(store.claim(anyString(), anyString(), any()))
+                .thenReturn(new IdempotencyStore.Claim(IdempotencyStore.State.IN_PROGRESS, null));
+
+        Executable action = () -> service.execute(
+                "key-1",
+                request(),
+                CreatePaymentResponse.class,
+                () -> new CreatePaymentResponse("payment-1", "CREATED")
+        );
+        assertThrows(IdempotencyInProgressException.class, action);
     }
 
-    private String hash(Object value) {
-        try {
-            byte[] json = serialize(value).getBytes(StandardCharsets.UTF_8);
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(json);
-            return HexFormat.of().formatHex(digest);
-        } catch (NoSuchAlgorithmException ex) {
-            throw new IllegalStateException("SHA-256 is not available", ex);
-        }
+    @Test
+    void shouldDiscardClaimWhenActionFails() {
+        when(store.claim(anyString(), anyString(), any()))
+                .thenReturn(new IdempotencyStore.Claim(IdempotencyStore.State.OWNED, null));
+
+        Executable action = () -> service.execute(
+                "key-1",
+                request(),
+                CreatePaymentResponse.class,
+                () -> {
+                    throw new IllegalStateException("boom");
+                }
+        );
+
+        assertThrows(IllegalStateException.class, action);
+        verify(store).discard("key-1");
+        verify(store, never()).recordResponse(anyString(), anyString(), anyInt());
+    }
+
+    private CreatePaymentRequest request() {
+        return new CreatePaymentRequest("customer-1", new BigDecimal("120.50"), "EUR");
     }
 
     private String serialize(Object value) {
@@ -107,17 +124,5 @@ class IdempotencyServiceTest {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to serialize test value", ex);
         }
-    }
-
-    @SuppressWarnings({"rawtypes", "unchecked"})
-    private void mockRecord(JdbcTemplate jdbcTemplate, String requestHash, String responseBody) {
-        when(jdbcTemplate.query(anyString(), any(ResultSetExtractor.class), any())).thenAnswer(invocation -> {
-            ResultSetExtractor extractor = invocation.getArgument(1);
-            ResultSet resultSet = mock(ResultSet.class);
-            when(resultSet.next()).thenReturn(true);
-            when(resultSet.getString("request_hash")).thenReturn(requestHash);
-            when(resultSet.getString("response_body")).thenReturn(responseBody);
-            return extractor.extractData(resultSet);
-        });
     }
 }

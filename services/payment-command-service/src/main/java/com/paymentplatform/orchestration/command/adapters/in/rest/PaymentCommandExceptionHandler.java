@@ -2,6 +2,7 @@ package com.paymentplatform.orchestration.command.adapters.in.rest;
 
 import com.paymentplatform.orchestration.command.domain.exception.PaymentRejectedException;
 import com.paymentplatform.orchestration.command.infrastructure.idempotency.IdempotencyConflictException;
+import com.paymentplatform.orchestration.command.infrastructure.idempotency.IdempotencyInProgressException;
 import com.paymentplatform.orchestration.command.infrastructure.idempotency.InvalidIdempotencyKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -21,6 +22,12 @@ public class PaymentCommandExceptionHandler {
     @ResponseStatus(HttpStatus.CONFLICT)
     public ErrorResponse handleIdempotencyConflict(IdempotencyConflictException ex) {
         return new ErrorResponse("IDEMPOTENCY_CONFLICT", ex.getMessage());
+    }
+
+    @ExceptionHandler(IdempotencyInProgressException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public ErrorResponse handleIdempotencyInProgress(IdempotencyInProgressException ex) {
+        return new ErrorResponse("IDEMPOTENCY_IN_PROGRESS", ex.getMessage());
     }
 
     @ExceptionHandler(InvalidIdempotencyKeyException.class)

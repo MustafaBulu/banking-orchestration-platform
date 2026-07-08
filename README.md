@@ -24,12 +24,15 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 
 1. A client sends `POST /v1/payments` to `payment-api-gateway`.
 2. The gateway forwards the request to `payment-command-service` and propagates `X-Correlation-Id` and `Idempotency-Key`.
-3. `payment-command-service` performs synchronous checks:
+3. `payment-command-service` performs synchronous checks **before opening any database transaction**,
+   so no connection is held across a remote call:
    - fraud check via `fraud-detection-service` gRPC
    - limit reservation via `limit-management-service` gRPC
 4. If checks pass, the payment aggregate emits a `PaymentCreated` domain event.
-5. The event is written to PostgreSQL `event_store`.
-6. The same transaction writes an outbox record to PostgreSQL `outbox`.
+5. A single database transaction writes the event to PostgreSQL `event_store` and the outbox record
+   to PostgreSQL `outbox`.
+6. If that transaction fails after a limit was reserved, the command service issues a compensating
+   `Release` to `limit-management-service`, so a reservation is never orphaned by a rolled-back write.
 7. The outbox relay publishes the event to Kafka.
 8. `payment-query-service` consumes the Kafka event and updates `payment_overview`.
 9. `ledger-service` consumes the same Kafka event and writes balanced debit/credit ledger entries.
@@ -75,10 +78,35 @@ The read side is eventually consistent by design.
 
 gRPC protobuf contracts are stored in `contracts/proto`.
 
-- `fraud-control.proto`
-- `limit-control.proto`
+- `fraud-control.proto` — `Evaluate`
+- `limit-control.proto` — `Reserve` and `Release` (the compensating step for a rolled-back write)
 
 The `libs/contracts-grpc` module generates Java stubs from these contracts.
+
+## Consistency and Compensation
+
+Creating a payment spans a remote side effect (the limit reservation) and a local database write, so
+it is a small saga rather than a single atomic action. The command service is the coordinator:
+
+1. The fraud and limit gRPC checks run **outside** any database transaction. This keeps remote calls
+   off the connection pool — a database connection is never held open across an RPC.
+2. The `event_store` and `outbox` writes then happen in **one** local transaction (the outbox is
+   atomic with the event).
+3. If that transaction fails after a reservation was taken, the coordinator issues a compensating
+   `Release`, so a rolled-back payment never leaves an orphaned reservation.
+
+Request-level idempotency follows the same "no RPC inside a transaction" rule. The `Idempotency-Key`
+is claimed in a short transaction (`INSERT ... ON CONFLICT DO NOTHING` as the ownership gate), the
+gRPC checks and persistence run with no transaction held, and the stored response is written at the
+end. A concurrent request that loses the claim race is rejected with `409 Conflict`
+(`IDEMPOTENCY_IN_PROGRESS`) instead of double-executing.
+
+**Known residual window (documented, not hidden):** compensation is best-effort. If the command
+service process dies *after* reserving but *before* the compensating `Release` is delivered, the
+reservation is left dangling until the reservation store's own expiry. This is the inherent
+crash-window of a saga without a durable compensation log; a persistent compensation queue (or
+reservation lease/TTL reaper) is the next step. The `limit.reservation.release.failed` metric counts
+compensations that could not be delivered.
 
 ## Local Runtime
 
@@ -172,6 +200,8 @@ Selected domain metrics:
 - `payments_created_total`
 - `payments_rejected_total`
 - `idempotency_hit_total`
+- `limit_reservation_compensated_total`
+- `limit_reservation_release_failed_total`
 - `outbox_pending`
 - `outbox_published_total`
 - `outbox_publish_failed_total`
@@ -212,6 +242,12 @@ Docker while executing on Docker-equipped CI runners.
 - Required idempotency-key replay — `IdempotencyKeyReplayIntegrationTest` (payment-command-service):
   the same `Idempotency-Key` with the same body creates one payment and replays the stored response,
   while the same key with a different body returns `409 Conflict`.
+- Limit reservation is compensated on failure — `ReservationCompensationIntegrationTest`
+  (payment-command-service): when persistence fails after the limit was reserved, the command service
+  releases the reservation and leaves no `event_store` or `outbox` row behind.
+- Remote checks never run inside a database transaction — `GrpcOutsideTransactionIntegrationTest`
+  (payment-command-service): during the fraud and limit gRPC calls, no transaction is active, so a DB
+  connection is never held across an RPC.
 - Wiring against real infrastructure — `ContextLoadsIntegrationTest` (command and ledger): each
   service boots against real PostgreSQL (Flyway migrations applied) and Kafka.
 

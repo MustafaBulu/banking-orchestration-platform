@@ -7,6 +7,7 @@ option java_multiple_files = true;
 
 service LimitControlService {
   rpc Reserve (LimitReserveRequest) returns (LimitReserveResponse);
+  rpc Release (LimitReleaseRequest) returns (LimitReleaseResponse);
 }
 
 message LimitReserveRequest {
@@ -20,4 +21,12 @@ message LimitReserveResponse {
   bool approved = 1;
   string reason_code = 2;
   string reservation_id = 3;
+}
+
+message LimitReleaseRequest {
+  string reservation_id = 1;
+}
+
+message LimitReleaseResponse {
+  bool released = 1;
 }

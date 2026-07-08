@@ -4,6 +4,7 @@ import com.paymentplatform.orchestration.command.application.port.out.LimitCheck
 import com.paymentplatform.orchestration.command.domain.model.Money;
 import com.paymentplatform.orchestration.command.infrastructure.resilience.GrpcResilienceProperties;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitControlServiceGrpc;
+import com.paymentplatform.orchestration.contracts.limit.v1.LimitReleaseRequest;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitReserveRequest;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitReserveResponse;
 import io.github.resilience4j.bulkhead.Bulkhead;
@@ -12,6 +13,8 @@ import io.github.resilience4j.circuitbreaker.CircuitBreaker;
 import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import io.github.resilience4j.retry.Retry;
 import io.github.resilience4j.retry.RetryRegistry;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Component;
 
 import java.util.concurrent.TimeUnit;
@@ -27,19 +30,24 @@ public class LimitGrpcAdapter implements LimitCheckPort {
     private final CircuitBreaker circuitBreaker;
     private final Retry retry;
     private final Bulkhead bulkhead;
+    private final Counter releaseFailedCounter;
 
     public LimitGrpcAdapter(
             LimitControlServiceGrpc.LimitControlServiceBlockingStub blockingStub,
             GrpcResilienceProperties properties,
             CircuitBreakerRegistry circuitBreakerRegistry,
             RetryRegistry retryRegistry,
-            BulkheadRegistry bulkheadRegistry
+            BulkheadRegistry bulkheadRegistry,
+            MeterRegistry meterRegistry
     ) {
         this.blockingStub = blockingStub;
         this.properties = properties;
         this.circuitBreaker = circuitBreakerRegistry.circuitBreaker(RESILIENCE_NAME);
         this.retry = retryRegistry.retry(RESILIENCE_NAME);
         this.bulkhead = bulkheadRegistry.bulkhead(RESILIENCE_NAME);
+        this.releaseFailedCounter = Counter.builder("limit.reservation.release.failed")
+                .description("Limit reservation compensations that could not be delivered")
+                .register(meterRegistry);
     }
 
     @Override
@@ -53,6 +61,31 @@ public class LimitGrpcAdapter implements LimitCheckPort {
         } catch (Exception ex) {
             return new LimitCheckResult(false, "LIMIT_SERVICE_UNAVAILABLE", null);
         }
+    }
+
+    @Override
+    public void release(String reservationId) {
+        if (reservationId == null || reservationId.isBlank()) {
+            return;
+        }
+        Runnable call = () -> doRelease(reservationId);
+        Runnable withCb = CircuitBreaker.decorateRunnable(circuitBreaker, call);
+        Runnable withRetry = Retry.decorateRunnable(retry, withCb);
+        Runnable withBulkhead = Bulkhead.decorateRunnable(bulkhead, withRetry);
+        try {
+            withBulkhead.run();
+        } catch (Exception ex) {
+            releaseFailedCounter.increment();
+        }
+    }
+
+    private void doRelease(String reservationId) {
+        LimitReleaseRequest request = LimitReleaseRequest.newBuilder()
+                .setReservationId(reservationId)
+                .build();
+        blockingStub
+                .withDeadlineAfter(properties.timeoutMs(), TimeUnit.MILLISECONDS)
+                .release(request);
     }
 
     private LimitCheckResult doGrpcCall(String paymentId, String customerId, Money money) {
