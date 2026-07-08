@@ -41,6 +41,13 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 
 The read side is eventually consistent by design.
 
+Every consumer (ledger, notification, query) runs behind a Spring Kafka `DefaultErrorHandler` with a
+bounded `FixedBackOff` and a `DeadLetterPublishingRecoverer`. A message that keeps failing is retried
+a fixed number of times (`app.kafka.retry.max-attempts` / `app.kafka.retry.backoff-ms`) and then
+routed to `<topic>.DLT` instead of hot-looping or being silently dropped, so one poison message never
+blocks its partition. This mirrors, on the consumer side, the bounded retry and dead-letter behaviour
+the outbox relay already provides on the producer side.
+
 ## Implemented Capabilities
 
 - Java 21 + Spring Boot + Maven
@@ -72,6 +79,7 @@ The read side is eventually consistent by design.
   - circuit breaker
   - bulkhead
   - outbox retry/backoff
+  - consumer bounded retry with dead-letter topic (DLT)
 - Docker Compose based local infrastructure
 
 ## Contracts
@@ -248,6 +256,10 @@ Docker while executing on Docker-equipped CI runners.
 - Remote checks never run inside a database transaction — `GrpcOutsideTransactionIntegrationTest`
   (payment-command-service): during the fraud and limit gRPC calls, no transaction is active, so a DB
   connection is never held across an RPC.
+- A poison message is dead-lettered instead of looping forever — `PoisonMessageDeadLetterIntegrationTest`
+  (ledger-service): a message that always fails to parse is retried a bounded number of times, then
+  published to `payment.domain.events.DLT`, and the consumer continues with the next valid event
+  (the partition is not blocked).
 - Wiring against real infrastructure — `ContextLoadsIntegrationTest` (command and ledger): each
   service boots against real PostgreSQL (Flyway migrations applied) and Kafka.
 
