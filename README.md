@@ -6,6 +6,13 @@ The project demonstrates a production-style payment processing platform using Ja
 microservices, Hexagonal Architecture, DDD, CQRS, Event Sourcing, Kafka, gRPC, PostgreSQL, and
 resiliency patterns.
 
+The design goal is not breadth for its own sake: the money spine (gateway → command → outbox →
+relay → ledger, plus idempotency and limit reservation/compensation) is treated as a **proven
+core** and backed by Testcontainers integration tests that fail if the property they assert is
+broken. Fraud, notification, and query are **supporting services** with lighter coverage. See
+[Scope and Coverage](#scope-and-coverage) for the exact split and
+[What is proven (and by which test)](#what-is-proven-and-by-which-test) for the evidence.
+
 ## Architecture
 
 The platform is organized as a Maven monorepo with independent Spring Boot services.
@@ -68,6 +75,8 @@ the outbox relay already provides on the producer side.
 - In-memory gateway rate limiting
 - Spring Actuator health and Prometheus metrics endpoints
 - Prometheus, Grafana, OpenTelemetry Collector, Tempo, Loki, and Promtail based local observability foundation
+- Distributed tracing (Micrometer Tracing over the OpenTelemetry SDK) with W3C `traceparent`
+  propagation across the gateway → command HTTP hop and the relay → consumer Kafka hop
 - Provisioned Grafana dashboard for service health, payment outcomes, outbox, downstream processing, and logs
 - Domain-level metrics for payments, idempotency, outbox publishing, ledger posting, and notifications
 - Service Dockerfiles for container image builds
@@ -203,6 +212,28 @@ Services export traces to the OpenTelemetry Collector over OTLP, and the collect
 Tempo. Application logs are written to local `logs/*.log` files and Promtail forwards them to Loki.
 Logs include `traceId` and `spanId` fields for trace-log correlation.
 
+### Distributed tracing
+
+Tracing is wired with Spring Boot's OpenTelemetry modules (Micrometer Tracing over the OpenTelemetry
+SDK) with W3C `traceparent` propagation and OTLP export to the collector. Propagation is enabled on
+the two hops that matter for the payment spine:
+
+- **HTTP (gateway → command):** the gateway's `WebClient` is built from the auto-configured,
+  observation-instrumented builder, so the outgoing call carries `traceparent` and the command
+  service continues the same trace.
+- **Kafka (relay → consumers):** the outbox relay's `KafkaTemplate` is observation-enabled, so it
+  injects `traceparent` into the record headers; the ledger, notification, and query listener
+  containers are observation-enabled, so each consumer continues the trace carried in the headers.
+
+What is proven by a test is the Kafka hop: `KafkaTracePropagationIntegrationTest`
+(payment-command-service) sends through the real, observation-enabled `KafkaTemplate` inside an
+active span and asserts the delivered Kafka record carries a well-formed W3C `traceparent` header
+whose trace id equals the active trace. Note the honest boundary: because the outbox intentionally
+decouples the write from publishing in time, the relay is a scheduled worker with no inbound request
+context, so its producer span starts a fresh trace. Propagation is real *within* each hop (HTTP
+gateway → command, and relay → consumers), but there is no single trace spanning gateway → … →
+ledger today.
+
 Selected domain metrics:
 
 - `payments_created_total`
@@ -260,6 +291,10 @@ Docker while executing on Docker-equipped CI runners.
   (ledger-service): a message that always fails to parse is retried a bounded number of times, then
   published to `payment.domain.events.DLT`, and the consumer continues with the next valid event
   (the partition is not blocked).
+- Trace context propagates through Kafka — `KafkaTracePropagationIntegrationTest`
+  (payment-command-service): a send through the observation-enabled outbox `KafkaTemplate` inside an
+  active span produces a Kafka record whose `traceparent` header is a well-formed W3C value carrying
+  that span's trace id, so a consumer can continue the same trace from the headers.
 - Wiring against real infrastructure — `ContextLoadsIntegrationTest` (command and ledger): each
   service boots against real PostgreSQL (Flyway migrations applied) and Kafka.
 
@@ -287,16 +322,29 @@ GitHub Actions runs the main quality gate on pushes and pull requests:
 - service container image builds
 - Kubernetes manifest rendering with Kustomize
 
-## Current Scope
+## Scope and Coverage
 
-This repository currently focuses on the core payment orchestration flow:
+Coverage across the seven services is deliberately uneven. The correctness effort is concentrated on
+the money spine and stated honestly rather than spread thin to look uniform.
 
-- command handling
-- fraud and limit checks
-- event persistence
-- reliable event publishing
-- read projection
-- ledger posting
-- notification recording
-- gateway access
-- baseline resiliency
+**Proven core** — deep integration coverage against real PostgreSQL and Kafka
+(see [What is proven](#what-is-proven-and-by-which-test)):
+
+- `payment-api-gateway` → `payment-command-service`: request idempotency, the atomic
+  event-store + outbox write, and the outbox relay to Kafka.
+- `limit-management-service` reservation with compensation on a rolled-back write.
+- `ledger-service`: idempotent double-entry posting under real duplicate delivery, and consumer
+  bounded-retry + dead-letter behaviour.
+- Trace-context propagation through Kafka on the relay → consumer hop.
+
+**Supporting services** — lighter coverage, exercised mainly by unit tests and context/wiring tests,
+not by dedicated end-to-end proofs:
+
+- `fraud-detection-service`: synchronous gRPC fraud check (gRPC resiliency is unit-tested on the
+  client adapter side).
+- `notification-service`: event-driven notification records (idempotent recording is unit-tested).
+- `payment-query-service`: read-model projection (consumer idempotency guard present; no dedicated
+  integration proof yet).
+
+This split is intentional: the flow that moves money and must not double-post or lose events is the
+part that is proven; the services around it are demonstrated but not exhaustively verified.
