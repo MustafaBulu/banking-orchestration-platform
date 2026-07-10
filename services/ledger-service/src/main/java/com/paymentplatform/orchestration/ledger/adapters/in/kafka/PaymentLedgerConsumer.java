@@ -2,6 +2,8 @@ package com.paymentplatform.orchestration.ledger.adapters.in.kafka;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedEventEnvelope;
+import com.paymentplatform.orchestration.events.schema.EventSchemaRegistry;
 import com.paymentplatform.orchestration.ledger.application.service.PaymentCreatedLedgerEvent;
 import com.paymentplatform.orchestration.ledger.application.service.PostLedgerEntriesService;
 import org.springframework.kafka.annotation.KafkaListener;
@@ -12,16 +14,17 @@ import java.time.Instant;
 @Component
 public class PaymentLedgerConsumer {
 
-    private static final String PAYMENT_CREATED = "PaymentCreated";
-
     private final ObjectMapper objectMapper;
+    private final EventSchemaRegistry eventSchemaRegistry;
     private final PostLedgerEntriesService postLedgerEntriesService;
 
     public PaymentLedgerConsumer(
             ObjectMapper objectMapper,
+            EventSchemaRegistry eventSchemaRegistry,
             PostLedgerEntriesService postLedgerEntriesService
     ) {
         this.objectMapper = objectMapper;
+        this.eventSchemaRegistry = eventSchemaRegistry;
         this.postLedgerEntriesService = postLedgerEntriesService;
     }
 
@@ -30,8 +33,11 @@ public class PaymentLedgerConsumer {
             groupId = "${spring.kafka.consumer.group-id:ledger-service}"
     )
     public void consume(String rawMessage) throws JsonProcessingException {
-        PaymentEventEnvelope envelope = objectMapper.readValue(rawMessage, PaymentEventEnvelope.class);
-        if (!PAYMENT_CREATED.equals(envelope.eventType()) || envelope.eventId() == null || envelope.data() == null) {
+        eventSchemaRegistry.validate(rawMessage);
+        PaymentCreatedEventEnvelope envelope = objectMapper.readValue(rawMessage, PaymentCreatedEventEnvelope.class);
+        if (!PaymentCreatedEventEnvelope.EVENT_TYPE.equals(envelope.eventType())
+                || envelope.eventId() == null
+                || envelope.data() == null) {
             return;
         }
 

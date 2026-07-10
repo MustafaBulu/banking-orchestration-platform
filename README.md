@@ -9,7 +9,7 @@ resiliency patterns.
 The design goal is not breadth for its own sake: the money spine (gateway → command → outbox →
 relay → ledger, plus idempotency and limit reservation/compensation) is treated as a **proven
 core** and backed by Testcontainers integration tests that fail if the property they assert is
-broken. Fraud, notification, and query are **supporting services** with lighter coverage. See
+broken. Fraud remains a **supporting service** with lighter coverage. See
 [Scope and Coverage](#scope-and-coverage) for the exact split and
 [What is proven (and by which test)](#what-is-proven-and-by-which-test) for the evidence.
 
@@ -21,9 +21,10 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 - `payment-command-service`: write side for payment commands, domain aggregate, event store, outbox, Kafka relay.
 - `payment-query-service`: read side for payment projections and query APIs.
 - `fraud-detection-service`: synchronous fraud evaluation over gRPC.
-- `limit-management-service`: synchronous limit reservation over gRPC.
+- `limit-management-service`: synchronous limit reservation over gRPC, backed by persistent reservation leases.
 - `ledger-service`: event-driven ledger posting with double-entry accounting records.
 - `notification-service`: event-driven customer notification record creation.
+- `libs/event-contracts`: versioned JSON Schemas, shared event envelopes, and the in-process event schema registry.
 - `libs/contracts-grpc`: generated Java gRPC contracts from protobuf files.
 - `libs/common-domain`: shared domain abstractions.
 
@@ -39,7 +40,8 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
 5. A single database transaction writes the event to PostgreSQL `event_store` and the outbox record
    to PostgreSQL `outbox`.
 6. If that transaction fails after a limit was reserved, the command service issues a compensating
-   `Release` to `limit-management-service`, so a reservation is never orphaned by a rolled-back write.
+   `Release` to `limit-management-service`. If that release is not delivered because the process dies,
+   the reservation is still bounded by the limit service's persistent lease expiry.
 7. The outbox relay publishes the event to Kafka.
 8. `payment-query-service` consumes the Kafka event and updates `payment_overview`.
 9. `ledger-service` consumes the same Kafka event and writes balanced debit/credit ledger entries.
@@ -65,7 +67,9 @@ the outbox relay already provides on the producer side.
 - PostgreSQL event store
 - Transactional outbox pattern
 - Kafka-based asynchronous event publishing
+- Versioned JSON Schema contracts for Kafka domain events
 - Required request-level idempotency with `Idempotency-Key` for payment creation
+- Persistent limit reservations with release and lease-expiry cleanup
 - Idempotent query projection using processed event tracking
 - Event-driven ledger posting with idempotent double-entry records
 - Event-driven notification records with processed event tracking
@@ -100,6 +104,17 @@ gRPC protobuf contracts are stored in `contracts/proto`.
 
 The `libs/contracts-grpc` module generates Java stubs from these contracts.
 
+Kafka domain event contracts live in `libs/event-contracts`.
+
+- `schemas/payment/domain-events/payment-created-v1.schema.json` defines the `PaymentCreated` v1
+  envelope and payload.
+- `PaymentCreatedEventEnvelope` and `PaymentCreatedPayload` are shared by the producer and
+  consumers instead of each service carrying its own hand-rolled envelope record.
+- `EventSchemaRegistry` is the in-process registry used by the command service before inserting an
+  outbox row and by ledger/query/notification consumers before deserializing a Kafka message.
+- `PaymentCreatedSchemaContractTest` compares the current schema to the checked-in v1 baseline and
+  fails if a required field, property, or scalar constraint is removed or changed incompatibly.
+
 ## Consistency and Compensation
 
 Creating a payment spans a remote side effect (the limit reservation) and a local database write, so
@@ -110,7 +125,10 @@ it is a small saga rather than a single atomic action. The command service is th
 2. The `event_store` and `outbox` writes then happen in **one** local transaction (the outbox is
    atomic with the event).
 3. If that transaction fails after a reservation was taken, the coordinator issues a compensating
-   `Release`, so a rolled-back payment never leaves an orphaned reservation.
+   `Release`.
+4. Limit reservations are persisted with a lease. A scheduled reaper marks expired active reservations
+   `EXPIRED`, so a missed compensating release is bounded by the configured lease duration instead of
+   being left in process memory forever.
 
 Request-level idempotency follows the same "no RPC inside a transaction" rule. The `Idempotency-Key`
 is claimed in a short transaction (`INSERT ... ON CONFLICT DO NOTHING` as the ownership gate), the
@@ -118,12 +136,12 @@ gRPC checks and persistence run with no transaction held, and the stored respons
 end. A concurrent request that loses the claim race is rejected with `409 Conflict`
 (`IDEMPOTENCY_IN_PROGRESS`) instead of double-executing.
 
-**Known residual window (documented, not hidden):** compensation is best-effort. If the command
-service process dies *after* reserving but *before* the compensating `Release` is delivered, the
-reservation is left dangling until the reservation store's own expiry. This is the inherent
-crash-window of a saga without a durable compensation log; a persistent compensation queue (or
-reservation lease/TTL reaper) is the next step. The `limit.reservation.release.failed` metric counts
-compensations that could not be delivered.
+**Known residual window (documented, not hidden):** the compensating `Release` call is still
+best-effort. If the command service process dies *after* reserving but *before* the release is
+delivered, the reservation remains active only until the limit service lease expires and the reaper
+marks it `EXPIRED`. This is not the same as a durable compensation log with replay, but it closes the
+unbounded orphaned-reservation window. The `limit.reservation.release.failed` metric counts
+compensations that could not be delivered, and `limit.reservation.expired` counts lease expirations.
 
 ## Local Runtime
 
@@ -215,24 +233,38 @@ Logs include `traceId` and `spanId` fields for trace-log correlation.
 ### Distributed tracing
 
 Tracing is wired with Spring Boot's OpenTelemetry modules (Micrometer Tracing over the OpenTelemetry
-SDK) with W3C `traceparent` propagation and OTLP export to the collector. Propagation is enabled on
-the two hops that matter for the payment spine:
+SDK) with W3C `traceparent` propagation and OTLP export to the collector. Propagation is enabled
+across the payment spine:
 
 - **HTTP (gateway → command):** the gateway's `WebClient` is built from the auto-configured,
   observation-instrumented builder, so the outgoing call carries `traceparent` and the command
   service continues the same trace.
+- **gRPC (command → fraud/limit):** command-service channels use a client interceptor that injects
+  the current span context into gRPC metadata. Fraud and limit servers use server interceptors that
+  extract that metadata and run RPC handling inside a server span with the caller's trace id.
+- **Outbox boundary (command → relay):** the command service persists a nullable W3C `traceparent`
+  on the `outbox` row when the event is enqueued. The relay validates that value, restores it as the
+  parent for an `outbox.relay` producer span, and publishes with trace context in Kafka headers. The
+  atomic event-store + outbox write remains one local transaction.
 - **Kafka (relay → consumers):** the outbox relay's `KafkaTemplate` is observation-enabled, so it
   injects `traceparent` into the record headers; the ledger, notification, and query listener
   containers are observation-enabled, so each consumer continues the trace carried in the headers.
 
-What is proven by a test is the Kafka hop: `KafkaTracePropagationIntegrationTest`
-(payment-command-service) sends through the real, observation-enabled `KafkaTemplate` inside an
-active span and asserts the delivered Kafka record carries a well-formed W3C `traceparent` header
-whose trace id equals the active trace. Note the honest boundary: because the outbox intentionally
-decouples the write from publishing in time, the relay is a scheduled worker with no inbound request
-context, so its producer span starts a fresh trace. Propagation is real *within* each hop (HTTP
-gateway → command, and relay → consumers), but there is no single trace spanning gateway → … →
-ledger today.
+Automated proof covers both sides of the asynchronous boundary:
+
+- `GrpcClientTracePropagationTest` (payment-command-service) proves the command-side gRPC client
+  interceptor injects a W3C `traceparent` metadata value carrying the active span's trace id.
+- `FraudGrpcTracePropagationTest` and `LimitGrpcTracePropagationTest` prove the fraud and limit gRPC
+  server interceptors continue the same trace id from incoming gRPC metadata.
+- `KafkaTracePropagationIntegrationTest` (payment-command-service) creates a payment inside an
+  active request span, asserts the outbox row stores that span's trace id, runs the relay, and
+  asserts the relay-published Kafka record carries the same trace id in a W3C `traceparent` header.
+- `LedgerTracePropagationIntegrationTest` (ledger-service) publishes a real Kafka record with a W3C
+  `traceparent` header and asserts the ledger listener observes an active span with that same trace
+  id.
+
+Tempo remains wired in the local Docker runtime for visual inspection through Grafana; the regression
+guard is the automated Testcontainers proof above.
 
 Selected domain metrics:
 
@@ -241,6 +273,7 @@ Selected domain metrics:
 - `idempotency_hit_total`
 - `limit_reservation_compensated_total`
 - `limit_reservation_release_failed_total`
+- `limit_reservation_expired_total`
 - `outbox_pending`
 - `outbox_published_total`
 - `outbox_publish_failed_total`
@@ -278,12 +311,23 @@ Docker while executing on Docker-equipped CI runners.
 - Consumer idempotency under real duplicate delivery — `LedgerConsumerIdempotencyIntegrationTest`
   (ledger-service): delivering the same `PaymentCreated` event twice results in exactly one ledger
   posting — two balanced entries and a single processed-event record.
+- Query projection idempotency under real duplicate delivery —
+  `PaymentProjectionConsumerIdempotencyIntegrationTest` (payment-query-service): delivering the same
+  `PaymentCreated` event twice results in exactly one `payment_overview` row and one processed-event
+  record.
+- Notification idempotency under real duplicate delivery —
+  `PaymentNotificationConsumerIdempotencyIntegrationTest` (notification-service): delivering the same
+  `PaymentCreated` event twice records exactly one notification and one processed-event record.
 - Required idempotency-key replay — `IdempotencyKeyReplayIntegrationTest` (payment-command-service):
   the same `Idempotency-Key` with the same body creates one payment and replays the stored response,
   while the same key with a different body returns `409 Conflict`.
 - Limit reservation is compensated on failure — `ReservationCompensationIntegrationTest`
   (payment-command-service): when persistence fails after the limit was reserved, the command service
   releases the reservation and leaves no `event_store` or `outbox` row behind.
+- Limit reservations are durable and lease-bounded — `LimitReservationIntegrationTest`
+  (limit-management-service): reservations are persisted in PostgreSQL, duplicate reserve calls for
+  the same payment reuse the active reservation, and an undelivered release is cleaned up by lease
+  expiry.
 - Remote checks never run inside a database transaction — `GrpcOutsideTransactionIntegrationTest`
   (payment-command-service): during the fraud and limit gRPC calls, no transaction is active, so a DB
   connection is never held across an RPC.
@@ -291,10 +335,20 @@ Docker while executing on Docker-equipped CI runners.
   (ledger-service): a message that always fails to parse is retried a bounded number of times, then
   published to `payment.domain.events.DLT`, and the consumer continues with the next valid event
   (the partition is not blocked).
-- Trace context propagates through Kafka — `KafkaTracePropagationIntegrationTest`
-  (payment-command-service): a send through the observation-enabled outbox `KafkaTemplate` inside an
-  active span produces a Kafka record whose `traceparent` header is a well-formed W3C value carrying
-  that span's trace id, so a consumer can continue the same trace from the headers.
+- Trace context crosses the outbox and Kafka consumer boundary —
+  `KafkaTracePropagationIntegrationTest` (payment-command-service) proves the originating request
+  trace id is persisted on the outbox row and carried by the relay-published Kafka record;
+  `LedgerTracePropagationIntegrationTest` (ledger-service) proves the ledger listener continues the
+  same trace id from Kafka headers.
+- Trace context propagates through gRPC checks — `GrpcClientTracePropagationTest`
+  (payment-command-service) proves `traceparent` is injected into gRPC metadata, and
+  `FraudGrpcTracePropagationTest` / `LimitGrpcTracePropagationTest` prove the fraud and limit server
+  spans continue the same trace id from that metadata.
+- Kafka event schema compatibility — `PaymentCreatedSchemaContractTest` (event-contracts) proves the
+  current `PaymentCreated` v1 JSON Schema still matches its baseline contract and rejects an
+  incompatible payload at build/test time; `OutboxAtomicityAndRelayIntegrationTest`
+  (payment-command-service) validates both the persisted outbox payload and the relay-published
+  Kafka value through `EventSchemaRegistry`.
 - Wiring against real infrastructure — `ContextLoadsIntegrationTest` (command and ledger): each
   service boots against real PostgreSQL (Flyway migrations applied) and Kafka.
 
@@ -332,19 +386,21 @@ the money spine and stated honestly rather than spread thin to look uniform.
 
 - `payment-api-gateway` → `payment-command-service`: request idempotency, the atomic
   event-store + outbox write, and the outbox relay to Kafka.
-- `limit-management-service` reservation with compensation on a rolled-back write.
+- `limit-management-service` reservation with compensation on a rolled-back write, backed by
+  persistent leases and expiry cleanup.
 - `ledger-service`: idempotent double-entry posting under real duplicate delivery, and consumer
   bounded-retry + dead-letter behaviour.
+- `payment-query-service`: idempotent read-model projection under real duplicate delivery.
+- `notification-service`: idempotent notification recording under real duplicate delivery.
 - Trace-context propagation through Kafka on the relay → consumer hop.
+- Kafka event contract enforcement for `PaymentCreated` v1 through JSON Schema validation and a
+  baseline compatibility test.
 
 **Supporting services** — lighter coverage, exercised mainly by unit tests and context/wiring tests,
 not by dedicated end-to-end proofs:
 
 - `fraud-detection-service`: synchronous gRPC fraud check (gRPC resiliency is unit-tested on the
   client adapter side).
-- `notification-service`: event-driven notification records (idempotent recording is unit-tested).
-- `payment-query-service`: read-model projection (consumer idempotency guard present; no dedicated
-  integration proof yet).
 
 This split is intentional: the flow that moves money and must not double-post or lose events is the
-part that is proven; the services around it are demonstrated but not exhaustively verified.
+part that is proven; fraud scoring is demonstrated but not exhaustively verified.

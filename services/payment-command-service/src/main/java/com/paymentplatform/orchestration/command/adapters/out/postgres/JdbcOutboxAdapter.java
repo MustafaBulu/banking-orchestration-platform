@@ -4,10 +4,15 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paymentplatform.orchestration.command.application.port.out.OutboxPort;
 import com.paymentplatform.orchestration.command.domain.event.PaymentCreatedEvent;
+import com.paymentplatform.orchestration.command.infrastructure.tracing.Traceparent;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedPayload;
+import com.paymentplatform.orchestration.events.schema.EventSchemaRegistry;
+import io.micrometer.tracing.Tracer;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
-import java.math.BigDecimal;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
@@ -17,28 +22,41 @@ public class JdbcOutboxAdapter implements OutboxPort {
 
     private static final String INSERT_SQL = """
             INSERT INTO outbox (
-                id, aggregate_id, aggregate_type, event_id, event_type, event_version, payload, status, retry_count, available_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?)
+                id, aggregate_id, aggregate_type, event_id, event_type, event_version, payload, traceparent, status, retry_count, available_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?)
             """;
 
     private final JdbcTemplate jdbcTemplate;
     private final ObjectMapper objectMapper;
+    private final EventSchemaRegistry eventSchemaRegistry;
+    private final ObjectProvider<Tracer> tracerProvider;
 
-    public JdbcOutboxAdapter(JdbcTemplate jdbcTemplate, ObjectMapper objectMapper) {
+    public JdbcOutboxAdapter(
+            JdbcTemplate jdbcTemplate,
+            ObjectMapper objectMapper,
+            EventSchemaRegistry eventSchemaRegistry,
+            ObjectProvider<Tracer> tracerProvider
+    ) {
         this.jdbcTemplate = jdbcTemplate;
         this.objectMapper = objectMapper;
+        this.eventSchemaRegistry = eventSchemaRegistry;
+        this.tracerProvider = tracerProvider;
     }
 
     @Override
     public void enqueue(PaymentCreatedEvent event) {
         Instant now = Instant.now();
-        String payloadJson = toJson(new PaymentEventEnvelope(
+        String payloadJson = toJson(new PaymentCreatedEventEnvelope(
                 event.eventId(),
                 event.aggregateId(),
-                event.eventType(),
                 event.occurredAt(),
                 new PaymentCreatedPayload(event.customerId(), event.amount(), event.currency())
         ));
+        eventSchemaRegistry.validate(
+                PaymentCreatedEventEnvelope.EVENT_TYPE,
+                PaymentCreatedEventEnvelope.EVENT_VERSION,
+                payloadJson
+        );
 
         jdbcTemplate.update(
                 INSERT_SQL,
@@ -49,6 +67,7 @@ public class JdbcOutboxAdapter implements OutboxPort {
                 event.eventType(),
                 1,
                 payloadJson,
+                Traceparent.fromCurrentSpan(tracerProvider.getIfAvailable()),
                 "NEW",
                 0,
                 Timestamp.from(now),
@@ -62,17 +81,5 @@ public class JdbcOutboxAdapter implements OutboxPort {
         } catch (JsonProcessingException ex) {
             throw new IllegalStateException("Failed to serialize outbox payload", ex);
         }
-    }
-
-    private record PaymentEventEnvelope(
-            String eventId,
-            String aggregateId,
-            String eventType,
-            Instant occurredAt,
-            PaymentCreatedPayload data
-    ) {
-    }
-
-    private record PaymentCreatedPayload(String customerId, BigDecimal amount, String currency) {
     }
 }

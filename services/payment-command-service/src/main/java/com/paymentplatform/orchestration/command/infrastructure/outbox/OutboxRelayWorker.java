@@ -2,18 +2,26 @@ package com.paymentplatform.orchestration.command.infrastructure.outbox;
 
 import com.paymentplatform.orchestration.command.adapters.out.postgres.OutboxJdbcRepository;
 import com.paymentplatform.orchestration.command.adapters.out.postgres.OutboxMessage;
+import com.paymentplatform.orchestration.command.infrastructure.tracing.Traceparent;
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.tracing.Span;
+import io.micrometer.tracing.Tracer;
+import io.micrometer.tracing.propagation.Propagator;
+import org.apache.kafka.clients.producer.ProducerRecord;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.TimeUnit;
@@ -26,6 +34,8 @@ public class OutboxRelayWorker {
     private final OutboxJdbcRepository outboxJdbcRepository;
     private final KafkaTemplate<String, String> kafkaTemplate;
     private final OutboxRelayProperties properties;
+    private final ObjectProvider<Tracer> tracerProvider;
+    private final ObjectProvider<Propagator> propagatorProvider;
     private final Counter outboxPublishedCounter;
     private final Counter outboxRetryCounter;
     private final Counter outboxFailedCounter;
@@ -34,11 +44,15 @@ public class OutboxRelayWorker {
             OutboxJdbcRepository outboxJdbcRepository,
             KafkaTemplate<String, String> kafkaTemplate,
             OutboxRelayProperties properties,
+            ObjectProvider<Tracer> tracerProvider,
+            ObjectProvider<Propagator> propagatorProvider,
             MeterRegistry meterRegistry
     ) {
         this.outboxJdbcRepository = outboxJdbcRepository;
         this.kafkaTemplate = kafkaTemplate;
         this.properties = properties;
+        this.tracerProvider = tracerProvider;
+        this.propagatorProvider = propagatorProvider;
         this.outboxPublishedCounter = Counter.builder("outbox.published")
                 .description("Outbox messages published to Kafka")
                 .register(meterRegistry);
@@ -63,8 +77,7 @@ public class OutboxRelayWorker {
         List<OutboxMessage> messages = outboxJdbcRepository.fetchBatchForUpdate(properties.batchSize());
         for (OutboxMessage message : messages) {
             try {
-                kafkaTemplate.send(properties.topic(), message.eventId(), message.payload())
-                        .get(properties.publishTimeoutMs(), TimeUnit.MILLISECONDS);
+                publish(message);
                 outboxJdbcRepository.markPublished(message.id());
                 outboxPublishedCounter.increment();
             } catch (InterruptedException ex) {
@@ -74,6 +87,49 @@ public class OutboxRelayWorker {
                 markRetryOrFailed(message, ex);
             }
         }
+    }
+
+    private void publish(OutboxMessage message)
+            throws ExecutionException, InterruptedException, TimeoutException {
+        ProducerRecord<String, String> record =
+                new ProducerRecord<>(properties.topic(), message.eventId(), message.payload());
+        if (Traceparent.isValid(message.traceparent())) {
+            record.headers().add(
+                    Traceparent.HEADER_NAME,
+                    message.traceparent().getBytes(StandardCharsets.UTF_8)
+            );
+        }
+
+        Span span = relaySpan(message.traceparent());
+        if (span == null) {
+            kafkaTemplate.send(record).get(properties.publishTimeoutMs(), TimeUnit.MILLISECONDS);
+            return;
+        }
+
+        Tracer tracer = tracerProvider.getIfAvailable();
+        try (Tracer.SpanInScope scope = tracer.withSpan(span)) {
+            kafkaTemplate.send(record).get(properties.publishTimeoutMs(), TimeUnit.MILLISECONDS);
+        } finally {
+            span.end();
+        }
+    }
+
+    private Span relaySpan(String traceparent) {
+        if (!Traceparent.isValid(traceparent)) {
+            return null;
+        }
+        Tracer tracer = tracerProvider.getIfAvailable();
+        Propagator propagator = propagatorProvider.getIfAvailable();
+        if (tracer == null || propagator == null) {
+            return null;
+        }
+        return propagator.extract(
+                        Map.of(Traceparent.HEADER_NAME, traceparent),
+                        (carrier, key) -> carrier.get(key)
+                )
+                .name("outbox.relay")
+                .kind(Span.Kind.PRODUCER)
+                .start();
     }
 
     private void markRetryOrFailed(OutboxMessage message, Exception ex) {

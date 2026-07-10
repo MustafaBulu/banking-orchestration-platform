@@ -1,4 +1,4 @@
-package com.paymentplatform.orchestration.ledger.adapters.in.kafka;
+package com.paymentplatform.orchestration.events.payment.v1;
 
 import java.math.BigDecimal;
 

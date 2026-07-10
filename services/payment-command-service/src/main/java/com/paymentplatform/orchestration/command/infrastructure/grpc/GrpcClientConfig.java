@@ -12,13 +12,19 @@ import org.springframework.context.annotation.Configuration;
 public class GrpcClientConfig {
 
     @Bean(destroyMethod = "shutdownNow")
-    public ManagedChannel fraudManagedChannel(@Value("${app.grpc.fraud.target:localhost:9091}") String target) {
-        return ManagedChannelBuilder.forTarget(target).usePlaintext().build();
+    public ManagedChannel fraudManagedChannel(
+            @Value("${app.grpc.fraud.target:localhost:9091}") String target,
+            GrpcClientTraceInterceptor traceInterceptor
+    ) {
+        return ManagedChannelBuilder.forTarget(target).usePlaintext().intercept(traceInterceptor).build();
     }
 
     @Bean(destroyMethod = "shutdownNow")
-    public ManagedChannel limitManagedChannel(@Value("${app.grpc.limit.target:localhost:9094}") String target) {
-        return ManagedChannelBuilder.forTarget(target).usePlaintext().build();
+    public ManagedChannel limitManagedChannel(
+            @Value("${app.grpc.limit.target:localhost:9094}") String target,
+            GrpcClientTraceInterceptor traceInterceptor
+    ) {
+        return ManagedChannelBuilder.forTarget(target).usePlaintext().intercept(traceInterceptor).build();
     }
 
     @Bean

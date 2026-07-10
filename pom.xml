@@ -20,12 +20,14 @@
     <properties>
         <java.version>21</java.version>
         <maven.compiler.release>${java.version}</maven.compiler.release>
+        <json-schema-validator.version>1.5.6</json-schema-validator.version>
         <testcontainers.version>1.21.3</testcontainers.version>
     </properties>
 
     <modules>
         <module>libs/common-domain</module>
         <module>libs/contracts-grpc</module>
+        <module>libs/event-contracts</module>
         <module>services/payment-api-gateway</module>
         <module>services/payment-command-service</module>
         <module>services/payment-query-service</module>

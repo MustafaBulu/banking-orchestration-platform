@@ -1,5 +1,11 @@
 package com.paymentplatform.orchestration.command;
 
+import com.paymentplatform.orchestration.command.application.command.CreatePaymentCommand;
+import com.paymentplatform.orchestration.command.application.port.in.CreatePaymentUseCase;
+import com.paymentplatform.orchestration.command.application.port.out.FraudCheckPort;
+import com.paymentplatform.orchestration.command.application.port.out.LimitCheckPort;
+import com.paymentplatform.orchestration.command.infrastructure.outbox.OutboxRelayWorker;
+import com.paymentplatform.orchestration.command.infrastructure.tracing.Traceparent;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import org.apache.kafka.clients.admin.Admin;
@@ -14,14 +20,17 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.HashMap;
@@ -30,10 +39,15 @@ import java.util.Map;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.when;
 
 @SpringBootTest(properties = {
         "management.tracing.enabled=true",
-        "management.tracing.sampling.probability=1.0"
+        "management.tracing.sampling.probability=1.0",
+        "app.outbox.relay.topic=payment.trace.probe",
+        "app.outbox.relay.poll-delay-ms=3600000"
 })
 @Testcontainers(disabledWithoutDocker = true)
 class KafkaTracePropagationIntegrationTest {
@@ -65,6 +79,21 @@ class KafkaTracePropagationIntegrationTest {
     @Autowired
     private Tracer tracer;
 
+    @Autowired
+    private CreatePaymentUseCase createPaymentUseCase;
+
+    @Autowired
+    private OutboxRelayWorker outboxRelayWorker;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @MockitoBean
+    private FraudCheckPort fraudCheckPort;
+
+    @MockitoBean
+    private LimitCheckPort limitCheckPort;
+
     @Test
     void producerInjectsCurrentTraceIntoKafkaHeaders() throws Exception {
         createTopic();
@@ -84,6 +113,47 @@ class KafkaTracePropagationIntegrationTest {
 
         Header traceparent = record.headers().lastHeader("traceparent");
         assertThat(traceparent).as("traceparent header must be propagated through Kafka").isNotNull();
+
+        String headerValue = new String(traceparent.value(), StandardCharsets.UTF_8);
+        assertThat(headerValue).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}");
+        assertThat(headerValue).contains(expectedTraceId);
+    }
+
+    @Test
+    void outboxRelayContinuesPersistedTraceIntoKafkaHeaders() throws Exception {
+        createTopic();
+        when(fraudCheckPort.evaluate(anyString(), anyString(), any()))
+                .thenReturn(new FraudCheckPort.FraudCheckResult(true, "OK", 0));
+        when(limitCheckPort.reserve(anyString(), anyString(), any()))
+                .thenReturn(new LimitCheckPort.LimitCheckResult(true, "OK", "reservation-1"));
+
+        String paymentId = UUID.randomUUID().toString();
+        Span span = tracer.nextSpan().name("payment-request").start();
+        String expectedTraceId;
+        try (Tracer.SpanInScope scope = tracer.withSpan(span)) {
+            expectedTraceId = span.context().traceId();
+            createPaymentUseCase.handle(new CreatePaymentCommand(
+                    paymentId, "customer-1", new BigDecimal("120.50"), "EUR"));
+        } finally {
+            span.end();
+        }
+
+        String eventId = jdbcTemplate.queryForObject(
+                "SELECT event_id FROM event_store WHERE stream_id = ?", String.class, paymentId);
+        String persistedTraceparent = jdbcTemplate.queryForObject(
+                "SELECT traceparent FROM outbox WHERE event_id = ?", String.class, eventId);
+
+        assertThat(persistedTraceparent)
+                .matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}")
+                .contains(expectedTraceId);
+
+        outboxRelayWorker.relay();
+
+        ConsumerRecord<String, String> record = consumeByKey(eventId);
+        assertThat(record).isNotNull();
+
+        Header traceparent = record.headers().lastHeader(Traceparent.HEADER_NAME);
+        assertThat(traceparent).as("outbox traceparent must be propagated through Kafka").isNotNull();
 
         String headerValue = new String(traceparent.value(), StandardCharsets.UTF_8);
         assertThat(headerValue).matches("00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}");

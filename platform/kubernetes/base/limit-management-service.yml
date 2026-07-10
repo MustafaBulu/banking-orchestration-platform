@@ -26,6 +26,8 @@ spec:
           envFrom:
             - configMapRef:
                 name: payment-platform-config
+            - secretRef:
+                name: payment-platform-secrets
           readinessProbe:
             httpGet:
               path: /actuator/health/readiness

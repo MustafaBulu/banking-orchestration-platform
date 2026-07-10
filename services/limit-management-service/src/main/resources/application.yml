@@ -1,9 +1,19 @@
 spring:
   application:
     name: limit-management-service
+  datasource:
+    url: ${LIMIT_DB_URL:jdbc:postgresql://localhost:5432/payment_limit}
+    username: ${LIMIT_DB_USERNAME:postgres}
+    password: ${LIMIT_DB_PASSWORD:postgres}
+    driver-class-name: org.postgresql.Driver
 app:
   grpc:
     port: ${LIMIT_GRPC_PORT:9094}
+  limit:
+    reservations:
+      per-payment-limit: ${LIMIT_PER_PAYMENT_LIMIT:5000}
+      lease-ttl-ms: ${LIMIT_RESERVATION_LEASE_TTL_MS:900000}
+      reaper-delay-ms: ${LIMIT_RESERVATION_REAPER_DELAY_MS:5000}
 server:
   port: 8085
 logging:

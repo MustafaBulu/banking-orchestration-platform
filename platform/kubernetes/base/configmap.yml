@@ -12,6 +12,7 @@ data:
   QUERY_DB_URL: jdbc:postgresql://postgres:5432/payment_query
   LEDGER_DB_URL: jdbc:postgresql://postgres:5432/payment_ledger
   NOTIFICATION_DB_URL: jdbc:postgresql://postgres:5432/payment_notification
+  LIMIT_DB_URL: jdbc:postgresql://postgres:5432/payment_limit
 
   KAFKA_BOOTSTRAP_SERVERS: kafka:9092
   PAYMENT_EVENTS_TOPIC: payment.domain.events
@@ -20,6 +21,8 @@ data:
   LIMIT_GRPC_TARGET: limit-management-service:9094
   FRAUD_GRPC_PORT: "9091"
   LIMIT_GRPC_PORT: "9094"
+  LIMIT_RESERVATION_LEASE_TTL_MS: "900000"
+  LIMIT_RESERVATION_REAPER_DELAY_MS: "5000"
 
   GRPC_TIMEOUT_MS: "700"
   GRPC_MAX_ATTEMPTS: "3"

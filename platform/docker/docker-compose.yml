@@ -185,13 +185,21 @@ services:
       - "8085:8085"
       - "9094:9094"
     environment:
+      LIMIT_DB_URL: jdbc:postgresql://postgres:5432/payment_limit
+      LIMIT_DB_USERNAME: postgres
+      LIMIT_DB_PASSWORD: postgres
       LIMIT_GRPC_PORT: 9094
+      LIMIT_RESERVATION_LEASE_TTL_MS: 900000
+      LIMIT_RESERVATION_REAPER_DELAY_MS: 5000
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
       LOG_FILE: /app/logs/limit-management-service.log
     volumes:
       - ../../logs:/app/logs
     depends_on:
-      - otel-collector
+      postgres:
+        condition: service_healthy
+      otel-collector:
+        condition: service_started
 
   notification-service:
     build:

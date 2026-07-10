@@ -5,6 +5,7 @@ import com.paymentplatform.orchestration.command.application.port.in.CreatePayme
 import com.paymentplatform.orchestration.command.application.port.out.FraudCheckPort;
 import com.paymentplatform.orchestration.command.application.port.out.LimitCheckPort;
 import com.paymentplatform.orchestration.command.infrastructure.outbox.OutboxRelayWorker;
+import com.paymentplatform.orchestration.events.schema.EventSchemaRegistry;
 import org.apache.kafka.clients.admin.Admin;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -51,6 +52,9 @@ class OutboxAtomicityAndRelayIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    @Autowired
+    private EventSchemaRegistry eventSchemaRegistry;
+
     @Test
     void writesOutboxInSameTransactionThenRelaysToKafka() throws Exception {
         when(fraudCheckPort.evaluate(anyString(), anyString(), any()))
@@ -70,6 +74,10 @@ class OutboxAtomicityAndRelayIntegrationTest extends AbstractIntegrationTest {
                 "SELECT COUNT(*) FROM outbox WHERE event_id = ? AND status = 'NEW'", Integer.class, eventId);
         assertThat(pendingOutbox).isEqualTo(1);
 
+        String outboxPayload = jdbcTemplate.queryForObject(
+                "SELECT payload::text FROM outbox WHERE event_id = ?", String.class, eventId);
+        eventSchemaRegistry.validate(outboxPayload);
+
         outboxRelayWorker.relay();
 
         String status = jdbcTemplate.queryForObject(
@@ -82,7 +90,9 @@ class OutboxAtomicityAndRelayIntegrationTest extends AbstractIntegrationTest {
         assertThat(record.value())
                 .contains("customer-1")
                 .contains("EUR")
-                .contains("PaymentCreated");
+                .contains("PaymentCreated")
+                .contains("eventVersion");
+        eventSchemaRegistry.validate(record.value());
     }
 
     private void createTopic() throws Exception {

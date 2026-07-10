@@ -4,47 +4,69 @@ import com.paymentplatform.orchestration.contracts.limit.v1.LimitReleaseRequest;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitReleaseResponse;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitReserveRequest;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitReserveResponse;
+import com.paymentplatform.orchestration.limit.reservation.LimitReservationProperties;
+import com.paymentplatform.orchestration.limit.reservation.LimitReservationRepository;
 import io.grpc.stub.StreamObserver;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 class LimitGrpcServiceTest {
 
-    private final LimitGrpcService service = new LimitGrpcService();
+    private final LimitReservationRepository reservationRepository = mock(LimitReservationRepository.class);
+    private final LimitGrpcService service = new LimitGrpcService(
+            reservationRepository,
+            new LimitReservationProperties(new BigDecimal("5000"), 900000)
+    );
 
     @Test
-    void releaseRemovesAnActiveReservation() {
-        String reservationId = reserve("1500");
-        assertThat(service.hasReservation(reservationId)).isTrue();
+    void reserveStoresApprovedRequests() {
+        when(reservationRepository.reserve(
+                eq("payment-1"),
+                eq("customer-1"),
+                eq(new BigDecimal("1500")),
+                eq("EUR"),
+                any(Instant.class)
+        )).thenReturn("resv-1");
 
-        LimitReleaseResponse response = release(reservationId);
+        String reservationId = reserve("payment-1", "1500");
 
-        assertThat(response.getReleased()).isTrue();
-        assertThat(service.hasReservation(reservationId)).isFalse();
+        assertThat(reservationId).isEqualTo("resv-1");
     }
 
     @Test
-    void releaseIsNoOpForUnknownReservation() {
-        LimitReleaseResponse response = release("resv-does-not-exist");
+    void releaseReturnsRepositoryResult() {
+        when(reservationRepository.release("resv-1")).thenReturn(true);
 
-        assertThat(response.getReleased()).isFalse();
+        LimitReleaseResponse response = release("resv-1");
+
+        assertThat(response.getReleased()).isTrue();
+        verify(reservationRepository).release("resv-1");
     }
 
     @Test
     void reserveDoesNotTrackRejectedRequests() {
-        String reservationId = reserve("9000");
+        String reservationId = reserve("payment-1", "9000");
 
         assertThat(reservationId).isEmpty();
+        verify(reservationRepository, never()).reserve(any(), any(), any(), any(), any());
     }
 
-    private String reserve(String amount) {
+    private String reserve(String paymentId, String amount) {
         Capturing<LimitReserveResponse> observer = new Capturing<>();
         service.reserve(LimitReserveRequest.newBuilder()
-                .setPaymentId("payment-1")
+                .setPaymentId(paymentId)
                 .setCustomerId("customer-1")
                 .setAmount(amount)
                 .setCurrency("EUR")

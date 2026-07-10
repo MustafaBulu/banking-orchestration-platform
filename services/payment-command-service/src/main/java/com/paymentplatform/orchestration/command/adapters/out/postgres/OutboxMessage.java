@@ -8,6 +8,7 @@ public record OutboxMessage(
         String eventId,
         String eventType,
         String payload,
+        String traceparent,
         int retryCount,
         Instant availableAt
 ) {

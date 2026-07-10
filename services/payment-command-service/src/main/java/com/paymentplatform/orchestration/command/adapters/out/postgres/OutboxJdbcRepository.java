@@ -20,7 +20,7 @@ public class OutboxJdbcRepository {
 
     public List<OutboxMessage> fetchBatchForUpdate(int batchSize) {
         String sql = """
-                SELECT id, event_id, event_type, payload::text, retry_count, available_at
+                SELECT id, event_id, event_type, payload::text, traceparent, retry_count, available_at
                 FROM outbox
                 WHERE status IN ('NEW', 'RETRY')
                   AND available_at <= NOW()
@@ -35,6 +35,7 @@ public class OutboxJdbcRepository {
                         rs.getString("event_id"),
                         rs.getString("event_type"),
                         rs.getString("payload"),
+                        rs.getString("traceparent"),
                         rs.getInt("retry_count"),
                         rs.getTimestamp("available_at").toInstant()
                 ),
