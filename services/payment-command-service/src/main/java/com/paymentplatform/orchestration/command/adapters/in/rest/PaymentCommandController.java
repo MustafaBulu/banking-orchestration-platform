@@ -54,6 +54,6 @@ public class PaymentCommandController {
                 request.currency()
         );
         String aggregateId = createPaymentUseCase.handle(command);
-        return new CreatePaymentResponse(aggregateId, "CREATED");
+        return new CreatePaymentResponse(aggregateId, "CAPTURED");
     }
 }

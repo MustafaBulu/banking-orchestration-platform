@@ -1,6 +1,6 @@
 package com.paymentplatform.orchestration.ledger;
 
-import com.paymentplatform.orchestration.ledger.application.service.PaymentCreatedLedgerEvent;
+import com.paymentplatform.orchestration.ledger.application.service.PaymentLedgerEvent;
 import com.paymentplatform.orchestration.ledger.application.service.PostLedgerEntriesService;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
@@ -84,7 +84,7 @@ class LedgerTracePropagationIntegrationTest {
             }
             consumed.countDown();
             return null;
-        }).when(postLedgerEntriesService).postPaymentCreated(any(PaymentCreatedLedgerEvent.class));
+        }).when(postLedgerEntriesService).postPaymentEvent(any(PaymentLedgerEvent.class));
 
         String traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
         String traceparent = "00-" + traceId + "-00f067aa0ba902b7-01";
@@ -124,7 +124,7 @@ class LedgerTracePropagationIntegrationTest {
     }
 
     private String envelope(String eventId, String paymentId, String customerId, String amount, String currency) {
-        return ("{\"eventId\":\"%s\",\"aggregateId\":\"%s\",\"eventType\":\"PaymentCreated\","
+        return ("{\"eventId\":\"%s\",\"aggregateId\":\"%s\",\"eventType\":\"PaymentAuthorized\","
                 + "\"eventVersion\":1,"
                 + "\"occurredAt\":\"2026-07-08T10:15:30Z\","
                 + "\"data\":{\"customerId\":\"%s\",\"amount\":%s,\"currency\":\"%s\"}}")

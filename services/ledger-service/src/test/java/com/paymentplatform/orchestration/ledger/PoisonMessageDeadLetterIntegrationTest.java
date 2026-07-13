@@ -116,7 +116,7 @@ class PoisonMessageDeadLetterIntegrationTest extends AbstractIntegrationTest {
     }
 
     private String envelope(String eventId, String paymentId, String customerId, String amount, String currency) {
-        return ("{\"eventId\":\"%s\",\"aggregateId\":\"%s\",\"eventType\":\"PaymentCreated\","
+        return ("{\"eventId\":\"%s\",\"aggregateId\":\"%s\",\"eventType\":\"PaymentAuthorized\","
                 + "\"eventVersion\":1,"
                 + "\"occurredAt\":\"2026-07-08T10:15:30Z\","
                 + "\"data\":{\"customerId\":\"%s\",\"amount\":%s,\"currency\":\"%s\"}}")

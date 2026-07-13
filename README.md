@@ -36,17 +36,23 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
    so no connection is held across a remote call:
    - fraud check via `fraud-detection-service` gRPC
    - limit reservation via `limit-management-service` gRPC
-4. If checks pass, the payment aggregate emits a `PaymentCreated` domain event.
-5. A single database transaction writes the event to PostgreSQL `event_store` and the outbox record
-   to PostgreSQL `outbox`.
-6. If that transaction fails after a limit was reserved, the command service issues a compensating
-   `Release` to `limit-management-service`. If that release is not delivered because the process dies,
-   the reservation is still bounded by the limit service's persistent lease expiry.
-7. The outbox relay publishes the event to Kafka.
-8. `payment-query-service` consumes the Kafka event and updates `payment_overview`.
-9. `ledger-service` consumes the same Kafka event and writes balanced debit/credit ledger entries.
-10. `notification-service` consumes the event and records a customer notification intent.
-11. A client can query `GET /v1/payments/{paymentId}` through the gateway.
+4. A persisted `PaymentSagaOrchestrator` records saga state and drives the payment lifecycle:
+   `PaymentCreated` -> `PaymentAuthorized` -> `PaymentCaptured`.
+5. Each lifecycle event is written through the same atomic local transaction: append to PostgreSQL
+   `event_store` and enqueue to PostgreSQL `outbox`.
+6. If a forward step fails after a limit was reserved, the saga runs explicit compensation:
+   `PaymentVoided` for an authorization hold, `PaymentRefunded` for a captured payment, and
+   `Release` to `limit-management-service`.
+7. A scheduled saga recovery worker atomically claims stuck `STARTED` / `COMPENSATING` sagas and
+   reconciles persisted events before retrying, then replays the idempotent forward or compensation
+   path until the saga reaches a terminal state.
+8. The outbox relay publishes lifecycle events to Kafka.
+9. `payment-query-service` consumes lifecycle events and updates `payment_overview` status.
+10. `ledger-service` consumes lifecycle money events (`PaymentAuthorized`, `PaymentCaptured`,
+    `PaymentVoided`, `PaymentRefunded`) and writes balanced debit/credit ledger entries. Capture
+    releases the authorization hold and posts settlement; refund reverses settlement.
+11. `notification-service` consumes `PaymentCreated` and records a customer notification intent.
+12. A client can query `GET /v1/payments/{paymentId}` through the gateway.
 
 The read side is eventually consistent by design.
 
@@ -107,26 +113,38 @@ The `libs/contracts-grpc` module generates Java stubs from these contracts.
 Kafka domain event contracts live in `libs/event-contracts`.
 
 - `schemas/payment/domain-events/payment-created-v1.schema.json` defines the `PaymentCreated` v1
-  envelope and payload.
-- `PaymentCreatedEventEnvelope` and `PaymentCreatedPayload` are shared by the producer and
-  consumers instead of each service carrying its own hand-rolled envelope record.
+  envelope and payload. The registry also includes lifecycle contracts for `PaymentAuthorized`,
+  `PaymentCaptured`, `PaymentVoided`, and `PaymentRefunded`, which are produced by the durable saga.
+- `PaymentCreatedEventEnvelope`, lifecycle event envelopes, and shared payload records are used by
+  producers and consumers instead of each service carrying its own hand-rolled envelope records. The
+  ledger consumer acts on lifecycle money events, query projects lifecycle status transitions, and
+  notification still uses `PaymentCreated` as its trigger.
 - `EventSchemaRegistry` is the in-process registry used by the command service before inserting an
   outbox row and by ledger/query/notification consumers before deserializing a Kafka message.
-- `PaymentCreatedSchemaContractTest` compares the current schema to the checked-in v1 baseline and
-  fails if a required field, property, or scalar constraint is removed or changed incompatibly.
+- `PaymentCreatedSchemaContractTest` compares the current lifecycle schemas to the checked-in v1
+  baselines and fails if a required field, property, or scalar constraint is removed or changed
+  incompatibly.
 
 ## Consistency and Compensation
 
-Creating a payment spans a remote side effect (the limit reservation) and a local database write, so
-it is a small saga rather than a single atomic action. The command service is the coordinator:
+Creating a payment spans a remote side effect (the limit reservation) and several local lifecycle
+writes, so it is a saga rather than a single atomic action. The command service is the coordinator:
 
 1. The fraud and limit gRPC checks run **outside** any database transaction. This keeps remote calls
    off the connection pool — a database connection is never held open across an RPC.
-2. The `event_store` and `outbox` writes then happen in **one** local transaction (the outbox is
-   atomic with the event).
-3. If that transaction fails after a reservation was taken, the coordinator issues a compensating
-   `Release`.
-4. Limit reservations are persisted with a lease. A scheduled reaper marks expired active reservations
+2. Saga state is persisted in `payment_saga` / `payment_saga_step`, including the command data and
+   the limit reservation id once it exists.
+3. Each lifecycle event write (`PaymentCreated`, `PaymentAuthorized`, `PaymentCaptured`,
+   `PaymentVoided`, `PaymentRefunded`) uses **one** local transaction for `event_store` + `outbox`.
+4. Before applying a retry limit, the coordinator reconciles durable side effects already visible in
+   `event_store` or on the saga row. For example, a captured event with a stale `PENDING` step is
+   marked `DONE` instead of being compensated.
+5. If a forward step exhausts its retry attempts, the coordinator marks the saga `COMPENSATING` and
+   applies completed-step compensations in reverse: refund/void local money state and release the
+   limit reservation.
+6. `SagaRecoveryWorker` atomically claims stuck `STARTED` / `COMPENSATING` sagas with a short
+   recovery lock, then continues the idempotent forward or compensation path to a terminal state.
+7. Limit reservations are persisted with a lease. A scheduled reaper marks expired active reservations
    `EXPIRED`, so a missed compensating release is bounded by the configured lease duration instead of
    being left in process memory forever.
 
@@ -136,12 +154,10 @@ gRPC checks and persistence run with no transaction held, and the stored respons
 end. A concurrent request that loses the claim race is rejected with `409 Conflict`
 (`IDEMPOTENCY_IN_PROGRESS`) instead of double-executing.
 
-**Known residual window (documented, not hidden):** the compensating `Release` call is still
-best-effort. If the command service process dies *after* reserving but *before* the release is
-delivered, the reservation remains active only until the limit service lease expires and the reaper
-marks it `EXPIRED`. This is not the same as a durable compensation log with replay, but it closes the
-unbounded orphaned-reservation window. The `limit.reservation.release.failed` metric counts
-compensations that could not be delivered, and `limit.reservation.expired` counts lease expirations.
+**Known residual window (documented, not hidden):** a process can still die after the remote limit
+service accepts a reservation but before the command service records the returned `reservationId` in
+the saga row. That narrow window is bounded by the limit service lease expiry; once the reservation
+id is recorded, compensation is durable and recoverable through `SagaRecoveryWorker`.
 
 ## Local Runtime
 
@@ -305,22 +321,33 @@ Docker while executing on Docker-equipped CI runners.
 ### What is proven (and by which test)
 
 - Outbox atomicity and relay — `OutboxAtomicityAndRelayIntegrationTest` (payment-command-service):
-  creating a payment writes the `event_store` row and the `outbox` row, the relay publishes the
-  event to Kafka and marks the outbox row `PUBLISHED`, and a real Kafka consumer receives the event
-  keyed by its `eventId`.
+  creating a payment writes the `PaymentCreated` / `PaymentAuthorized` / `PaymentCaptured`
+  lifecycle events to `event_store` and `outbox`, the relay publishes them to Kafka and marks the
+  outbox rows `PUBLISHED`, and a real Kafka consumer receives the captured event keyed by its
+  `eventId`.
 - Consumer idempotency under real duplicate delivery — `LedgerConsumerIdempotencyIntegrationTest`
-  (ledger-service): delivering the same `PaymentCreated` event twice results in exactly one ledger
-  posting — two balanced entries and a single processed-event record.
+  (ledger-service): delivering duplicate lifecycle events posts each money event exactly once.
+  `PaymentAuthorized`, `PaymentCaptured`, `PaymentVoided`, and `PaymentRefunded` produce their
+  expected balanced debit/credit entries; `PaymentCreated` is marked processed without ledger lines.
+  Unit coverage also asserts account-level net balances for authorize/capture, void, and refund
+  paths.
 - Query projection idempotency under real duplicate delivery —
   `PaymentProjectionConsumerIdempotencyIntegrationTest` (payment-query-service): delivering the same
   `PaymentCreated` event twice results in exactly one `payment_overview` row and one processed-event
-  record.
+  record; lifecycle events advance the projected status through `AUTHORIZED` to `CAPTURED`.
 - Notification idempotency under real duplicate delivery —
   `PaymentNotificationConsumerIdempotencyIntegrationTest` (notification-service): delivering the same
   `PaymentCreated` event twice records exactly one notification and one processed-event record.
 - Required idempotency-key replay — `IdempotencyKeyReplayIntegrationTest` (payment-command-service):
   the same `Idempotency-Key` with the same body creates one payment and replays the stored response,
-  while the same key with a different body returns `409 Conflict`.
+  while the same key with a different body returns `409 Conflict`. The successful saga emits the
+  three forward lifecycle events once.
+- Durable saga lifecycle, compensation, and recovery - `PaymentSagaOrchestratorTest`,
+  `PaymentSagaCompensationIntegrationTest`, and `PaymentSagaRecoveryWorkerIntegrationTest`
+  (payment-command-service): the happy path reaches `COMPLETED`, capture failure voids the
+  authorization and releases the limit against real saga tables, a stuck started saga can continue to
+  capture, a persisted capture with a stale pending step is reconciled before retry exhaustion, and a
+  compensating saga can be recovered without double-release or double-voiding.
 - Limit reservation is compensated on failure — `ReservationCompensationIntegrationTest`
   (payment-command-service): when persistence fails after the limit was reserved, the command service
   releases the reservation and leaves no `event_store` or `outbox` row behind.
@@ -345,14 +372,14 @@ Docker while executing on Docker-equipped CI runners.
   `FraudGrpcTracePropagationTest` / `LimitGrpcTracePropagationTest` prove the fraud and limit server
   spans continue the same trace id from that metadata.
 - Kafka event schema compatibility — `PaymentCreatedSchemaContractTest` (event-contracts) proves the
-  current `PaymentCreated` v1 JSON Schema still matches its baseline contract and rejects an
+  current payment lifecycle v1 JSON Schemas still match their baseline contracts and reject an
   incompatible payload at build/test time; `OutboxAtomicityAndRelayIntegrationTest`
   (payment-command-service) validates both the persisted outbox payload and the relay-published
   Kafka value through `EventSchemaRegistry`.
 - Wiring against real infrastructure — `ContextLoadsIntegrationTest` (command and ledger): each
   service boots against real PostgreSQL (Flyway migrations applied) and Kafka.
 
-These tests assert exact-count invariants (one posting, one payment, one outbox row) rather than
+These tests assert exact-count invariants (one posting, one payment, one lifecycle outbox sequence) rather than
 mere presence, so a regression surfaces as a failure — for example, removing the outbox write makes
 the outbox atomicity test fail.
 
@@ -384,17 +411,17 @@ the money spine and stated honestly rather than spread thin to look uniform.
 **Proven core** — deep integration coverage against real PostgreSQL and Kafka
 (see [What is proven](#what-is-proven-and-by-which-test)):
 
-- `payment-api-gateway` → `payment-command-service`: request idempotency, the atomic
-  event-store + outbox write, and the outbox relay to Kafka.
+- `payment-api-gateway` -> `payment-command-service`: request idempotency, durable saga state,
+  lifecycle event-store + outbox writes, and the outbox relay to Kafka.
 - `limit-management-service` reservation with compensation on a rolled-back write, backed by
   persistent leases and expiry cleanup.
-- `ledger-service`: idempotent double-entry posting under real duplicate delivery, and consumer
-  bounded-retry + dead-letter behaviour.
+- `ledger-service`: idempotent lifecycle double-entry posting under real duplicate delivery, and
+  consumer bounded-retry + dead-letter behaviour.
 - `payment-query-service`: idempotent read-model projection under real duplicate delivery.
 - `notification-service`: idempotent notification recording under real duplicate delivery.
 - Trace-context propagation through Kafka on the relay → consumer hop.
-- Kafka event contract enforcement for `PaymentCreated` v1 through JSON Schema validation and a
-  baseline compatibility test.
+- Kafka event contract enforcement for payment lifecycle v1 events through JSON Schema validation
+  and baseline compatibility tests.
 
 **Supporting services** — lighter coverage, exercised mainly by unit tests and context/wiring tests,
 not by dedicated end-to-end proofs:

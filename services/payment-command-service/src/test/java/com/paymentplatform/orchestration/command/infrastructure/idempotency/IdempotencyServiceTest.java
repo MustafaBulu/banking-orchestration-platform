@@ -38,7 +38,7 @@ class IdempotencyServiceTest {
                 "key-1",
                 request(),
                 CreatePaymentResponse.class,
-                () -> new CreatePaymentResponse("payment-1", "CREATED")
+                () -> new CreatePaymentResponse("payment-1", "CAPTURED")
         );
 
         assertEquals("payment-1", response.paymentId());
@@ -47,7 +47,7 @@ class IdempotencyServiceTest {
 
     @Test
     void shouldReturnStoredResponseWithoutRunningActionOnReplay() {
-        CreatePaymentResponse stored = new CreatePaymentResponse("payment-1", "CREATED");
+        CreatePaymentResponse stored = new CreatePaymentResponse("payment-1", "CAPTURED");
         when(store.claim(anyString(), anyString(), any()))
                 .thenReturn(new IdempotencyStore.Claim(IdempotencyStore.State.REPLAY, serialize(stored)));
 
@@ -58,7 +58,7 @@ class IdempotencyServiceTest {
                 CreatePaymentResponse.class,
                 () -> {
                     actionCalls.incrementAndGet();
-                    return new CreatePaymentResponse("payment-2", "CREATED");
+                    return new CreatePaymentResponse("payment-2", "CAPTURED");
                 }
         );
 
@@ -76,7 +76,7 @@ class IdempotencyServiceTest {
                 "key-1",
                 request(),
                 CreatePaymentResponse.class,
-                () -> new CreatePaymentResponse("payment-1", "CREATED")
+                () -> new CreatePaymentResponse("payment-1", "CAPTURED")
         );
         assertThrows(IdempotencyConflictException.class, action);
     }
@@ -90,7 +90,7 @@ class IdempotencyServiceTest {
                 "key-1",
                 request(),
                 CreatePaymentResponse.class,
-                () -> new CreatePaymentResponse("payment-1", "CREATED")
+                () -> new CreatePaymentResponse("payment-1", "CAPTURED")
         );
         assertThrows(IdempotencyInProgressException.class, action);
     }

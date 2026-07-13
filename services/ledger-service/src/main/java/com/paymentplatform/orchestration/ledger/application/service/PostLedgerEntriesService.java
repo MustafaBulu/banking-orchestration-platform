@@ -24,11 +24,25 @@ public class PostLedgerEntriesService {
 
     @Transactional
     public void postPaymentCreated(PaymentCreatedLedgerEvent event) {
+        postPaymentEvent(new PaymentLedgerEvent(
+                event.eventId(),
+                event.paymentId(),
+                "PaymentCreated",
+                event.customerId(),
+                event.amount(),
+                event.currency(),
+                event.occurredAt()
+        ));
+    }
+
+    @Transactional
+    public void postPaymentEvent(PaymentLedgerEvent event) {
         if (ledgerEntryRepository.isProcessed(event.eventId())) {
             return;
         }
 
-        LedgerPosting posting = LedgerPosting.fromPaymentCreated(
+        LedgerPosting posting = LedgerPosting.fromPaymentEvent(
+                event.eventType(),
                 event.eventId(),
                 event.paymentId(),
                 event.customerId(),

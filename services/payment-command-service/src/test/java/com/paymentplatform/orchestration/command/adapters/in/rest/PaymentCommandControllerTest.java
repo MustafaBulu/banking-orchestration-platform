@@ -65,14 +65,15 @@ class PaymentCommandControllerTest {
                 any(CreatePaymentRequest.class),
                 eq(CreatePaymentResponse.class),
                 anySupplier()
-        )).thenReturn(new CreatePaymentResponse("payment-1", "CREATED"));
+        )).thenReturn(new CreatePaymentResponse("payment-1", "CAPTURED"));
 
         mockMvc.perform(post("/v1/payments")
                         .header(ApiHeaders.idempotencyKey(), "payment-key-1")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(REQUEST_BODY))
                 .andExpect(status().isAccepted())
-                .andExpect(jsonPath("$.paymentId").value("payment-1"));
+                .andExpect(jsonPath("$.paymentId").value("payment-1"))
+                .andExpect(jsonPath("$.status").value("CAPTURED"));
 
         verify(idempotencyService).execute(
                 eq("payment-key-1"),

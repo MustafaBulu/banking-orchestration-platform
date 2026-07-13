@@ -3,8 +3,13 @@ package com.paymentplatform.orchestration.events.schema;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentAuthorizedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentCapturedEventEnvelope;
 import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedEventEnvelope;
 import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedPayload;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentLifecyclePayload;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentRefundedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentVoidedEventEnvelope;
 import org.junit.jupiter.api.Test;
 
 import java.math.BigDecimal;
@@ -22,17 +27,12 @@ class PaymentCreatedSchemaContractTest {
     private final EventSchemaRegistry registry = new EventSchemaRegistry(objectMapper);
 
     @Test
-    void acceptsCurrentPaymentCreatedEnvelope() throws Exception {
-        PaymentCreatedEventEnvelope envelope = new PaymentCreatedEventEnvelope(
-                "event-1",
-                "payment-1",
-                Instant.parse("2026-07-08T10:15:30Z"),
-                new PaymentCreatedPayload("customer-1", new BigDecimal("120.50"), "EUR")
-        );
+    void acceptsCurrentPaymentLifecycleEnvelopes() throws Exception {
+        for (SchemaCase schemaCase : schemaCases()) {
+            String json = objectMapper.writeValueAsString(schemaCase.envelope());
 
-        String json = objectMapper.writeValueAsString(envelope);
-
-        registry.validate(json);
+            registry.validate(json);
+        }
     }
 
     @Test
@@ -59,15 +59,14 @@ class PaymentCreatedSchemaContractTest {
 
     @Test
     void currentSchemaRemainsBackwardCompatibleWithV1Baseline() throws Exception {
-        JsonNode baseline = read("/schema-baselines/payment-created-v1.schema.json");
-        JsonNode current = registry.schemaNode(
-                PaymentCreatedEventEnvelope.EVENT_TYPE,
-                PaymentCreatedEventEnvelope.EVENT_VERSION
-        );
+        for (SchemaCase schemaCase : schemaCases()) {
+            JsonNode baseline = read(schemaCase.baselineResource());
+            JsonNode current = registry.schemaNode(schemaCase.eventType(), schemaCase.eventVersion());
 
-        List<String> errors = JsonSchemaCompatibility.backwardCompatibilityErrors(baseline, current);
+            List<String> errors = JsonSchemaCompatibility.backwardCompatibilityErrors(baseline, current);
 
-        assertThat(errors).isEmpty();
+            assertThat(errors).isEmpty();
+        }
     }
 
     @Test
@@ -111,5 +110,51 @@ class PaymentCreatedSchemaContractTest {
             }
             return objectMapper.readTree(stream);
         }
+    }
+
+    private List<SchemaCase> schemaCases() {
+        Instant occurredAt = Instant.parse("2026-07-08T10:15:30Z");
+        PaymentLifecyclePayload lifecyclePayload =
+                new PaymentLifecyclePayload("customer-1", new BigDecimal("120.50"), "EUR");
+        return List.of(
+                new SchemaCase(
+                        new PaymentCreatedEventEnvelope(
+                                "event-1",
+                                "payment-1",
+                                occurredAt,
+                                new PaymentCreatedPayload("customer-1", new BigDecimal("120.50"), "EUR")
+                        ),
+                        PaymentCreatedEventEnvelope.EVENT_TYPE,
+                        PaymentCreatedEventEnvelope.EVENT_VERSION,
+                        "/schema-baselines/payment-created-v1.schema.json"
+                ),
+                new SchemaCase(
+                        new PaymentAuthorizedEventEnvelope("event-2", "payment-1", occurredAt, lifecyclePayload),
+                        PaymentAuthorizedEventEnvelope.EVENT_TYPE,
+                        PaymentAuthorizedEventEnvelope.EVENT_VERSION,
+                        "/schema-baselines/payment-authorized-v1.schema.json"
+                ),
+                new SchemaCase(
+                        new PaymentCapturedEventEnvelope("event-3", "payment-1", occurredAt, lifecyclePayload),
+                        PaymentCapturedEventEnvelope.EVENT_TYPE,
+                        PaymentCapturedEventEnvelope.EVENT_VERSION,
+                        "/schema-baselines/payment-captured-v1.schema.json"
+                ),
+                new SchemaCase(
+                        new PaymentVoidedEventEnvelope("event-4", "payment-1", occurredAt, lifecyclePayload),
+                        PaymentVoidedEventEnvelope.EVENT_TYPE,
+                        PaymentVoidedEventEnvelope.EVENT_VERSION,
+                        "/schema-baselines/payment-voided-v1.schema.json"
+                ),
+                new SchemaCase(
+                        new PaymentRefundedEventEnvelope("event-5", "payment-1", occurredAt, lifecyclePayload),
+                        PaymentRefundedEventEnvelope.EVENT_TYPE,
+                        PaymentRefundedEventEnvelope.EVENT_VERSION,
+                        "/schema-baselines/payment-refunded-v1.schema.json"
+                )
+        );
+    }
+
+    private record SchemaCase(Object envelope, String eventType, int eventVersion, String baselineResource) {
     }
 }

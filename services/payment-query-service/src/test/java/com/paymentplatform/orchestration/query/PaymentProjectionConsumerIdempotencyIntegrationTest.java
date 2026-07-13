@@ -31,11 +31,11 @@ class PaymentProjectionConsumerIdempotencyIntegrationTest extends AbstractIntegr
 
         String eventId = UUID.randomUUID().toString();
         String paymentId = UUID.randomUUID().toString();
-        String duplicate = envelope(eventId, paymentId, "customer-1", "120.50", "EUR");
+        String duplicate = envelope(eventId, paymentId, "PaymentCreated", "customer-1", "120.50", "EUR");
 
         String sentinelId = UUID.randomUUID().toString();
         String sentinelPaymentId = UUID.randomUUID().toString();
-        String sentinel = envelope(sentinelId, sentinelPaymentId, "customer-2", "10.00", "EUR");
+        String sentinel = envelope(sentinelId, sentinelPaymentId, "PaymentCreated", "customer-2", "10.00", "EUR");
 
         try (KafkaProducer<String, String> producer = newProducer()) {
             producer.send(new ProducerRecord<>(TOPIC, eventId, duplicate)).get();
@@ -55,6 +55,52 @@ class PaymentProjectionConsumerIdempotencyIntegrationTest extends AbstractIntegr
         assertThat(processed).isOne();
     }
 
+    @Test
+    void projectsLifecycleStatusTransitions() throws Exception {
+        createTopic();
+
+        String paymentId = UUID.randomUUID().toString();
+        String createdId = UUID.randomUUID().toString();
+        String authorizedId = UUID.randomUUID().toString();
+        String capturedId = UUID.randomUUID().toString();
+
+        try (KafkaProducer<String, String> producer = newProducer()) {
+            producer.send(new ProducerRecord<>(
+                    TOPIC,
+                    createdId,
+                    envelope(createdId, paymentId, "PaymentCreated", "customer-1", "120.50", "EUR")
+            )).get();
+            producer.send(new ProducerRecord<>(
+                    TOPIC,
+                    authorizedId,
+                    envelope(authorizedId, paymentId, "PaymentAuthorized", "customer-1", "120.50", "EUR")
+            )).get();
+            producer.send(new ProducerRecord<>(
+                    TOPIC,
+                    capturedId,
+                    envelope(capturedId, paymentId, "PaymentCaptured", "customer-1", "120.50", "EUR")
+            )).get();
+            producer.flush();
+        }
+
+        awaitStatus(paymentId, "CAPTURED");
+
+        String status = jdbcTemplate.queryForObject(
+                "SELECT status FROM payment_overview WHERE payment_id = ?",
+                String.class,
+                paymentId
+        );
+        assertThat(status).isEqualTo("CAPTURED");
+        Integer processed = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM processed_event WHERE event_id IN (?, ?, ?)",
+                Integer.class,
+                createdId,
+                authorizedId,
+                capturedId
+        );
+        assertThat(processed).isEqualTo(3);
+    }
+
     private void awaitProjected(String paymentId) throws InterruptedException {
         long deadline = System.currentTimeMillis() + 30000;
         while (System.currentTimeMillis() < deadline) {
@@ -66,6 +112,22 @@ class PaymentProjectionConsumerIdempotencyIntegrationTest extends AbstractIntegr
             Thread.sleep(500);
         }
         throw new AssertionError("Sentinel payment was not projected within timeout");
+    }
+
+    private void awaitStatus(String paymentId, String expectedStatus) throws InterruptedException {
+        long deadline = System.currentTimeMillis() + 30000;
+        while (System.currentTimeMillis() < deadline) {
+            List<String> statuses = jdbcTemplate.queryForList(
+                    "SELECT status FROM payment_overview WHERE payment_id = ?",
+                    String.class,
+                    paymentId
+            );
+            if (statuses.contains(expectedStatus)) {
+                return;
+            }
+            Thread.sleep(500);
+        }
+        throw new AssertionError("Payment status was not projected within timeout");
     }
 
     private void createTopic() throws Exception {
@@ -86,11 +148,18 @@ class PaymentProjectionConsumerIdempotencyIntegrationTest extends AbstractIntegr
         return new KafkaProducer<>(props);
     }
 
-    private String envelope(String eventId, String paymentId, String customerId, String amount, String currency) {
-        return ("{\"eventId\":\"%s\",\"aggregateId\":\"%s\",\"eventType\":\"PaymentCreated\","
+    private String envelope(
+            String eventId,
+            String paymentId,
+            String eventType,
+            String customerId,
+            String amount,
+            String currency
+    ) {
+        return ("{\"eventId\":\"%s\",\"aggregateId\":\"%s\",\"eventType\":\"%s\","
                 + "\"eventVersion\":1,"
                 + "\"occurredAt\":\"2026-07-08T10:15:30Z\","
                 + "\"data\":{\"customerId\":\"%s\",\"amount\":%s,\"currency\":\"%s\"}}")
-                .formatted(eventId, paymentId, customerId, amount, currency);
+                .formatted(eventId, paymentId, eventType, customerId, amount, currency);
     }
 }

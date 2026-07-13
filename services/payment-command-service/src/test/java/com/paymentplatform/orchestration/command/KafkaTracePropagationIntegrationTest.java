@@ -139,7 +139,9 @@ class KafkaTracePropagationIntegrationTest {
         }
 
         String eventId = jdbcTemplate.queryForObject(
-                "SELECT event_id FROM event_store WHERE stream_id = ?", String.class, paymentId);
+                "SELECT event_id FROM event_store WHERE stream_id = ? AND event_type = 'PaymentCaptured'",
+                String.class,
+                paymentId);
         String persistedTraceparent = jdbcTemplate.queryForObject(
                 "SELECT traceparent FROM outbox WHERE event_id = ?", String.class, eventId);
 

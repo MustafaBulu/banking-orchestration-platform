@@ -7,7 +7,11 @@ import com.networknt.schema.JsonSchema;
 import com.networknt.schema.JsonSchemaFactory;
 import com.networknt.schema.SpecVersion;
 import com.networknt.schema.ValidationMessage;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentAuthorizedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentCapturedEventEnvelope;
 import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentRefundedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentVoidedEventEnvelope;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -22,6 +26,14 @@ public class EventSchemaRegistry {
 
     private static final String PAYMENT_CREATED_SCHEMA =
             "/schemas/payment/domain-events/payment-created-v1.schema.json";
+    private static final String PAYMENT_AUTHORIZED_SCHEMA =
+            "/schemas/payment/domain-events/payment-authorized-v1.schema.json";
+    private static final String PAYMENT_CAPTURED_SCHEMA =
+            "/schemas/payment/domain-events/payment-captured-v1.schema.json";
+    private static final String PAYMENT_VOIDED_SCHEMA =
+            "/schemas/payment/domain-events/payment-voided-v1.schema.json";
+    private static final String PAYMENT_REFUNDED_SCHEMA =
+            "/schemas/payment/domain-events/payment-refunded-v1.schema.json";
 
     private final ObjectMapper objectMapper;
     private final Map<EventSchemaKey, JsonSchema> schemas = new HashMap<>();
@@ -29,6 +41,10 @@ public class EventSchemaRegistry {
     public EventSchemaRegistry(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
         register(PaymentCreatedEventEnvelope.EVENT_TYPE, PaymentCreatedEventEnvelope.EVENT_VERSION, PAYMENT_CREATED_SCHEMA);
+        register(PaymentAuthorizedEventEnvelope.EVENT_TYPE, PaymentAuthorizedEventEnvelope.EVENT_VERSION, PAYMENT_AUTHORIZED_SCHEMA);
+        register(PaymentCapturedEventEnvelope.EVENT_TYPE, PaymentCapturedEventEnvelope.EVENT_VERSION, PAYMENT_CAPTURED_SCHEMA);
+        register(PaymentVoidedEventEnvelope.EVENT_TYPE, PaymentVoidedEventEnvelope.EVENT_VERSION, PAYMENT_VOIDED_SCHEMA);
+        register(PaymentRefundedEventEnvelope.EVENT_TYPE, PaymentRefundedEventEnvelope.EVENT_VERSION, PAYMENT_REFUNDED_SCHEMA);
     }
 
     public void validate(String rawJson) {

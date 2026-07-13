@@ -18,9 +18,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PostLedgerEntriesServiceTest {
 
-    private static final PaymentCreatedLedgerEvent PAYMENT_CREATED_EVENT = new PaymentCreatedLedgerEvent(
+    private static final PaymentLedgerEvent PAYMENT_AUTHORIZED_EVENT = new PaymentLedgerEvent(
             "event-1",
             "payment-1",
+            "PaymentAuthorized",
             "customer-1",
             new BigDecimal("120.50"),
             "EUR",
@@ -32,12 +33,76 @@ class PostLedgerEntriesServiceTest {
         FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
         PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
 
-        service.postPaymentCreated(PAYMENT_CREATED_EVENT);
+        service.postPaymentEvent(PAYMENT_AUTHORIZED_EVENT);
 
         assertEquals(2, repository.entries.size());
         assertEquals(0, total(repository.entries, LedgerEntryType.DEBIT)
                 .compareTo(total(repository.entries, LedgerEntryType.CREDIT)));
-        assertTrue(repository.processedEventIds.contains(PAYMENT_CREATED_EVENT.eventId()));
+        assertTrue(repository.processedEventIds.contains(PAYMENT_AUTHORIZED_EVENT.eventId()));
+    }
+
+    @Test
+    void shouldCreateBalancedReversalForVoidedAuthorization() {
+        FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
+        PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
+
+        service.postPaymentEvent(new PaymentLedgerEvent(
+                "event-void-1",
+                "payment-1",
+                "PaymentVoided",
+                "customer-1",
+                new BigDecimal("120.50"),
+                "EUR",
+                Instant.parse("2026-06-03T10:16:30Z")
+        ));
+
+        assertEquals(2, repository.entries.size());
+        assertEquals("LIMIT_HOLD_LIABILITY", repository.entries.get(0).accountCode());
+        assertEquals(LedgerEntryType.DEBIT, repository.entries.get(0).entryType());
+        assertEquals("CUSTOMER_AUTH_HOLD", repository.entries.get(1).accountCode());
+        assertEquals(LedgerEntryType.CREDIT, repository.entries.get(1).entryType());
+    }
+
+    @Test
+    void captureShouldReleaseAuthorizationHoldAndPostSettlement() {
+        FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
+        PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
+
+        service.postPaymentEvent(PAYMENT_AUTHORIZED_EVENT);
+        service.postPaymentEvent(event("event-capture-1", "PaymentCaptured"));
+
+        assertEquals(6, repository.entries.size());
+        assertEquals(0, net(repository.entries, "CUSTOMER_AUTH_HOLD").compareTo(BigDecimal.ZERO));
+        assertEquals(0, net(repository.entries, "LIMIT_HOLD_LIABILITY").compareTo(BigDecimal.ZERO));
+        assertEquals(0, net(repository.entries, "SETTLEMENT_ACCOUNT").compareTo(new BigDecimal("120.50")));
+        assertEquals(0, net(repository.entries, "CUSTOMER_ACCOUNT").compareTo(new BigDecimal("-120.50")));
+    }
+
+    @Test
+    void refundedCapturedPaymentShouldNetToZero() {
+        FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
+        PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
+
+        service.postPaymentEvent(PAYMENT_AUTHORIZED_EVENT);
+        service.postPaymentEvent(event("event-capture-1", "PaymentCaptured"));
+        service.postPaymentEvent(event("event-refund-1", "PaymentRefunded"));
+
+        assertEquals(0, net(repository.entries, "CUSTOMER_AUTH_HOLD").compareTo(BigDecimal.ZERO));
+        assertEquals(0, net(repository.entries, "LIMIT_HOLD_LIABILITY").compareTo(BigDecimal.ZERO));
+        assertEquals(0, net(repository.entries, "SETTLEMENT_ACCOUNT").compareTo(BigDecimal.ZERO));
+        assertEquals(0, net(repository.entries, "CUSTOMER_ACCOUNT").compareTo(BigDecimal.ZERO));
+    }
+
+    @Test
+    void voidedAuthorizationShouldNetToZero() {
+        FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
+        PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
+
+        service.postPaymentEvent(PAYMENT_AUTHORIZED_EVENT);
+        service.postPaymentEvent(event("event-void-1", "PaymentVoided"));
+
+        assertEquals(0, net(repository.entries, "CUSTOMER_AUTH_HOLD").compareTo(BigDecimal.ZERO));
+        assertEquals(0, net(repository.entries, "LIMIT_HOLD_LIABILITY").compareTo(BigDecimal.ZERO));
     }
 
     @Test
@@ -45,8 +110,8 @@ class PostLedgerEntriesServiceTest {
         FakeLedgerEntryRepository repository = new FakeLedgerEntryRepository();
         PostLedgerEntriesService service = new PostLedgerEntriesService(repository, new SimpleMeterRegistry());
 
-        service.postPaymentCreated(PAYMENT_CREATED_EVENT);
-        service.postPaymentCreated(PAYMENT_CREATED_EVENT);
+        service.postPaymentEvent(PAYMENT_AUTHORIZED_EVENT);
+        service.postPaymentEvent(PAYMENT_AUTHORIZED_EVENT);
 
         assertEquals(2, repository.entries.size());
     }
@@ -56,6 +121,27 @@ class PostLedgerEntriesServiceTest {
                 .filter(entry -> entry.entryType() == entryType)
                 .map(LedgerEntry::amount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private static BigDecimal net(List<LedgerEntry> entries, String accountCode) {
+        return entries.stream()
+                .filter(entry -> entry.accountCode().equals(accountCode))
+                .map(entry -> entry.entryType() == LedgerEntryType.DEBIT
+                        ? entry.amount()
+                        : entry.amount().negate())
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+    }
+
+    private static PaymentLedgerEvent event(String eventId, String eventType) {
+        return new PaymentLedgerEvent(
+                eventId,
+                "payment-1",
+                eventType,
+                "customer-1",
+                new BigDecimal("120.50"),
+                "EUR",
+                Instant.parse("2026-06-03T10:16:30Z")
+        );
     }
 
     private static class FakeLedgerEntryRepository implements LedgerEntryRepository {

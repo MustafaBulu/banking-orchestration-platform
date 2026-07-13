@@ -2,7 +2,7 @@ package com.paymentplatform.orchestration.command.application.service;
 
 import com.paymentplatform.orchestration.command.application.port.out.OutboxPort;
 import com.paymentplatform.orchestration.command.application.port.out.PaymentEventStorePort;
-import com.paymentplatform.orchestration.command.domain.event.PaymentCreatedEvent;
+import com.paymentplatform.orchestration.command.domain.event.PaymentEvent;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -18,7 +18,7 @@ public class PaymentPersister {
     }
 
     @Transactional
-    public void persist(PaymentCreatedEvent event) {
+    public void persist(PaymentEvent event) {
         paymentEventStorePort.append(event);
         outboxPort.enqueue(event);
     }

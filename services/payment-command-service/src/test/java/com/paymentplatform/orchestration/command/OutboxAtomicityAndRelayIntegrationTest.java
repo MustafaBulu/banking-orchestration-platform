@@ -4,6 +4,10 @@ import com.paymentplatform.orchestration.command.application.command.CreatePayme
 import com.paymentplatform.orchestration.command.application.port.in.CreatePaymentUseCase;
 import com.paymentplatform.orchestration.command.application.port.out.FraudCheckPort;
 import com.paymentplatform.orchestration.command.application.port.out.LimitCheckPort;
+import com.paymentplatform.orchestration.command.application.port.out.PaymentSagaRepository;
+import com.paymentplatform.orchestration.command.application.saga.PaymentSagaStatus;
+import com.paymentplatform.orchestration.command.application.saga.PaymentSagaStep;
+import com.paymentplatform.orchestration.command.application.saga.PaymentSagaStepStatus;
 import com.paymentplatform.orchestration.command.infrastructure.outbox.OutboxRelayWorker;
 import com.paymentplatform.orchestration.events.schema.EventSchemaRegistry;
 import org.apache.kafka.clients.admin.Admin;
@@ -55,6 +59,9 @@ class OutboxAtomicityAndRelayIntegrationTest extends AbstractIntegrationTest {
     @Autowired
     private EventSchemaRegistry eventSchemaRegistry;
 
+    @Autowired
+    private PaymentSagaRepository paymentSagaRepository;
+
     @Test
     void writesOutboxInSameTransactionThenRelaysToKafka() throws Exception {
         when(fraudCheckPort.evaluate(anyString(), anyString(), any()))
@@ -67,30 +74,53 @@ class OutboxAtomicityAndRelayIntegrationTest extends AbstractIntegrationTest {
         createPaymentUseCase.handle(new CreatePaymentCommand(
                 paymentId, "customer-1", new BigDecimal("120.50"), "EUR"));
 
-        String eventId = jdbcTemplate.queryForObject(
-                "SELECT event_id FROM event_store WHERE stream_id = ?", String.class, paymentId);
-        assertThat(eventId).isNotNull();
+        List<String> eventIds = jdbcTemplate.queryForList(
+                "SELECT event_id FROM event_store WHERE stream_id = ? ORDER BY stream_version",
+                String.class,
+                paymentId
+        );
+        assertThat(eventIds).hasSize(3);
+        List<String> eventTypes = jdbcTemplate.queryForList(
+                "SELECT event_type FROM event_store WHERE stream_id = ? ORDER BY stream_version",
+                String.class,
+                paymentId
+        );
+        assertThat(eventTypes).containsExactly("PaymentCreated", "PaymentAuthorized", "PaymentCaptured");
+        assertThat(paymentSagaRepository.findByPaymentId(paymentId))
+                .hasValueSatisfying(saga -> assertThat(saga.status()).isEqualTo(PaymentSagaStatus.COMPLETED));
+        assertThat(paymentSagaRepository.findSteps("saga-" + paymentId))
+                .extracting(PaymentSagaStep::status)
+                .containsExactly(
+                        PaymentSagaStepStatus.DONE,
+                        PaymentSagaStepStatus.DONE,
+                        PaymentSagaStepStatus.DONE,
+                        PaymentSagaStepStatus.DONE
+                );
         Integer pendingOutbox = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM outbox WHERE event_id = ? AND status = 'NEW'", Integer.class, eventId);
-        assertThat(pendingOutbox).isEqualTo(1);
+                "SELECT COUNT(*) FROM outbox WHERE aggregate_id = ? AND status = 'NEW'", Integer.class, paymentId);
+        assertThat(pendingOutbox).isEqualTo(3);
 
-        String outboxPayload = jdbcTemplate.queryForObject(
-                "SELECT payload::text FROM outbox WHERE event_id = ?", String.class, eventId);
-        eventSchemaRegistry.validate(outboxPayload);
+        List<String> outboxPayloads = jdbcTemplate.queryForList(
+                "SELECT payload::text FROM outbox WHERE aggregate_id = ? ORDER BY created_at", String.class, paymentId);
+        outboxPayloads.forEach(eventSchemaRegistry::validate);
 
         outboxRelayWorker.relay();
 
-        String status = jdbcTemplate.queryForObject(
-                "SELECT status FROM outbox WHERE event_id = ?", String.class, eventId);
-        assertThat(status).isEqualTo("PUBLISHED");
+        Integer published = jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox WHERE aggregate_id = ? AND status = 'PUBLISHED'",
+                Integer.class,
+                paymentId
+        );
+        assertThat(published).isEqualTo(3);
 
-        ConsumerRecord<String, String> record = consumeByKey(eventId);
+        String capturedEventId = eventIds.getLast();
+        ConsumerRecord<String, String> record = consumeByKey(capturedEventId);
         assertThat(record).isNotNull();
-        assertThat(record.key()).isEqualTo(eventId);
+        assertThat(record.key()).isEqualTo(capturedEventId);
         assertThat(record.value())
                 .contains("customer-1")
                 .contains("EUR")
-                .contains("PaymentCreated")
+                .contains("PaymentCaptured")
                 .contains("eventVersion");
         eventSchemaRegistry.validate(record.value());
     }

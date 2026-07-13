@@ -1,7 +1,5 @@
 package com.paymentplatform.orchestration.command.domain.event;
 
-import com.paymentplatform.orchestration.common.domain.DomainEvent;
-
 import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
@@ -13,7 +11,7 @@ public record PaymentCreatedEvent(
         String customerId,
         BigDecimal amount,
         String currency
-) implements DomainEvent {
+) implements PaymentEvent {
 
     public static PaymentCreatedEvent of(
             String paymentId,

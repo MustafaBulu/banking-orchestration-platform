@@ -33,6 +33,11 @@ app:
       base-backoff-ms: ${OUTBOX_RELAY_BASE_BACKOFF_MS:1000}
       publish-timeout-ms: ${OUTBOX_RELAY_PUBLISH_TIMEOUT_MS:1200}
       topic: ${PAYMENT_EVENTS_TOPIC:payment.domain.events}
+  payment-saga:
+    max-attempts: ${PAYMENT_SAGA_MAX_ATTEMPTS:3}
+    recovery-batch-size: ${PAYMENT_SAGA_RECOVERY_BATCH_SIZE:20}
+    recovery-poll-delay-ms: ${PAYMENT_SAGA_RECOVERY_POLL_DELAY_MS:5000}
+    recovery-stuck-after-ms: ${PAYMENT_SAGA_RECOVERY_STUCK_AFTER_MS:30000}
 server:
   port: 8081
 logging:

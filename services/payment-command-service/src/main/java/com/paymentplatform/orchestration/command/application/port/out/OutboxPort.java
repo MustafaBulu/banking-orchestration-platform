@@ -1,8 +1,8 @@
 package com.paymentplatform.orchestration.command.application.port.out;
 
-import com.paymentplatform.orchestration.command.domain.event.PaymentCreatedEvent;
+import com.paymentplatform.orchestration.command.domain.event.PaymentEvent;
 
 public interface OutboxPort {
 
-    void enqueue(PaymentCreatedEvent event);
+    void enqueue(PaymentEvent event);
 }

@@ -63,7 +63,7 @@ class IdempotencyKeyReplayIntegrationTest extends AbstractIntegrationTest {
 
         Integer eventCount = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM event_store WHERE payload->>'customerId' = ?", Integer.class, customerId);
-        assertThat(eventCount).isEqualTo(1);
+        assertThat(eventCount).isEqualTo(3);
     }
 
     @Test
@@ -79,7 +79,7 @@ class IdempotencyKeyReplayIntegrationTest extends AbstractIntegrationTest {
 
         Integer eventCount = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM event_store WHERE payload->>'customerId' = ?", Integer.class, customerId);
-        assertThat(eventCount).isEqualTo(1);
+        assertThat(eventCount).isEqualTo(3);
     }
 
     private org.springframework.test.web.servlet.ResultActions submit(String idempotencyKey, String body) throws Exception {

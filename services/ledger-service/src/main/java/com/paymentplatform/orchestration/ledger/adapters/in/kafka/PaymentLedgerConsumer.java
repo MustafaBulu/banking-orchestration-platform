@@ -1,18 +1,27 @@
 package com.paymentplatform.orchestration.ledger.adapters.in.kafka;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedEventEnvelope;
 import com.paymentplatform.orchestration.events.schema.EventSchemaRegistry;
-import com.paymentplatform.orchestration.ledger.application.service.PaymentCreatedLedgerEvent;
+import com.paymentplatform.orchestration.ledger.application.service.PaymentLedgerEvent;
 import com.paymentplatform.orchestration.ledger.application.service.PostLedgerEntriesService;
 import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 
 import java.time.Instant;
+import java.util.Set;
 
 @Component
 public class PaymentLedgerConsumer {
+
+    private static final Set<String> SUPPORTED_EVENT_TYPES = Set.of(
+            "PaymentCreated",
+            "PaymentAuthorized",
+            "PaymentCaptured",
+            "PaymentVoided",
+            "PaymentRefunded"
+    );
 
     private final ObjectMapper objectMapper;
     private final EventSchemaRegistry eventSchemaRegistry;
@@ -34,20 +43,28 @@ public class PaymentLedgerConsumer {
     )
     public void consume(String rawMessage) throws JsonProcessingException {
         eventSchemaRegistry.validate(rawMessage);
-        PaymentCreatedEventEnvelope envelope = objectMapper.readValue(rawMessage, PaymentCreatedEventEnvelope.class);
-        if (!PaymentCreatedEventEnvelope.EVENT_TYPE.equals(envelope.eventType())
-                || envelope.eventId() == null
-                || envelope.data() == null) {
+        JsonNode envelope = objectMapper.readTree(rawMessage);
+        String eventType = envelope.path("eventType").asText(null);
+        JsonNode data = envelope.path("data");
+        if (!SUPPORTED_EVENT_TYPES.contains(eventType)
+                || envelope.path("eventId").isMissingNode()
+                || data.isMissingNode()) {
             return;
         }
 
-        postLedgerEntriesService.postPaymentCreated(new PaymentCreatedLedgerEvent(
-                envelope.eventId(),
-                envelope.aggregateId(),
-                envelope.data().customerId(),
-                envelope.data().amount(),
-                envelope.data().currency(),
-                envelope.occurredAt() == null ? Instant.now() : envelope.occurredAt()
+        postLedgerEntriesService.postPaymentEvent(new PaymentLedgerEvent(
+                envelope.path("eventId").asText(),
+                envelope.path("aggregateId").asText(),
+                eventType,
+                data.path("customerId").asText(),
+                data.path("amount").decimalValue(),
+                data.path("currency").asText(),
+                occurredAt(envelope)
         ));
+    }
+
+    private Instant occurredAt(JsonNode envelope) {
+        String occurredAt = envelope.path("occurredAt").asText(null);
+        return occurredAt == null ? Instant.now() : Instant.parse(occurredAt);
     }
 }

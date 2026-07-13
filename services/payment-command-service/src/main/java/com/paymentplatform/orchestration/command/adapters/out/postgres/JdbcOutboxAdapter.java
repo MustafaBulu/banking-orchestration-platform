@@ -3,10 +3,15 @@ package com.paymentplatform.orchestration.command.adapters.out.postgres;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paymentplatform.orchestration.command.application.port.out.OutboxPort;
-import com.paymentplatform.orchestration.command.domain.event.PaymentCreatedEvent;
+import com.paymentplatform.orchestration.command.domain.event.PaymentEvent;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentAuthorizedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentCapturedEventEnvelope;
 import com.paymentplatform.orchestration.command.infrastructure.tracing.Traceparent;
 import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedEventEnvelope;
 import com.paymentplatform.orchestration.events.payment.v1.PaymentCreatedPayload;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentLifecyclePayload;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentRefundedEventEnvelope;
+import com.paymentplatform.orchestration.events.payment.v1.PaymentVoidedEventEnvelope;
 import com.paymentplatform.orchestration.events.schema.EventSchemaRegistry;
 import io.micrometer.tracing.Tracer;
 import org.springframework.beans.factory.ObjectProvider;
@@ -44,17 +49,12 @@ public class JdbcOutboxAdapter implements OutboxPort {
     }
 
     @Override
-    public void enqueue(PaymentCreatedEvent event) {
+    public void enqueue(PaymentEvent event) {
         Instant now = Instant.now();
-        String payloadJson = toJson(new PaymentCreatedEventEnvelope(
-                event.eventId(),
-                event.aggregateId(),
-                event.occurredAt(),
-                new PaymentCreatedPayload(event.customerId(), event.amount(), event.currency())
-        ));
+        String payloadJson = toJson(envelope(event));
         eventSchemaRegistry.validate(
-                PaymentCreatedEventEnvelope.EVENT_TYPE,
-                PaymentCreatedEventEnvelope.EVENT_VERSION,
+                event.eventType(),
+                event.eventVersion(),
                 payloadJson
         );
 
@@ -65,7 +65,7 @@ public class JdbcOutboxAdapter implements OutboxPort {
                 "Payment",
                 event.eventId(),
                 event.eventType(),
-                1,
+                event.eventVersion(),
                 payloadJson,
                 Traceparent.fromCurrentSpan(tracerProvider.getIfAvailable()),
                 "NEW",
@@ -73,6 +73,28 @@ public class JdbcOutboxAdapter implements OutboxPort {
                 Timestamp.from(now),
                 Timestamp.from(now)
         );
+    }
+
+    private Object envelope(PaymentEvent event) {
+        PaymentLifecyclePayload payload =
+                new PaymentLifecyclePayload(event.customerId(), event.amount(), event.currency());
+        return switch (event.eventType()) {
+            case "PaymentCreated" -> new PaymentCreatedEventEnvelope(
+                    event.eventId(),
+                    event.aggregateId(),
+                    event.occurredAt(),
+                    new PaymentCreatedPayload(event.customerId(), event.amount(), event.currency())
+            );
+            case "PaymentAuthorized" -> new PaymentAuthorizedEventEnvelope(
+                    event.eventId(), event.aggregateId(), event.occurredAt(), payload);
+            case "PaymentCaptured" -> new PaymentCapturedEventEnvelope(
+                    event.eventId(), event.aggregateId(), event.occurredAt(), payload);
+            case "PaymentVoided" -> new PaymentVoidedEventEnvelope(
+                    event.eventId(), event.aggregateId(), event.occurredAt(), payload);
+            case "PaymentRefunded" -> new PaymentRefundedEventEnvelope(
+                    event.eventId(), event.aggregateId(), event.occurredAt(), payload);
+            default -> throw new IllegalStateException("Unsupported payment event type: " + event.eventType());
+        };
     }
 
     private String toJson(Object value) {
