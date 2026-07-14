@@ -1,5 +1,6 @@
 package com.paymentplatform.orchestration.command.infrastructure.grpc;
 
+import com.paymentplatform.orchestration.contracts.acquirer.v1.AcquirerControlServiceGrpc;
 import com.paymentplatform.orchestration.contracts.fraud.v1.FraudControlServiceGrpc;
 import com.paymentplatform.orchestration.contracts.limit.v1.LimitControlServiceGrpc;
 import io.grpc.ManagedChannel;
@@ -27,6 +28,14 @@ public class GrpcClientConfig {
         return ManagedChannelBuilder.forTarget(target).usePlaintext().intercept(traceInterceptor).build();
     }
 
+    @Bean(destroyMethod = "shutdownNow")
+    public ManagedChannel acquirerManagedChannel(
+            @Value("${app.grpc.acquirer.target:localhost:9096}") String target,
+            GrpcClientTraceInterceptor traceInterceptor
+    ) {
+        return ManagedChannelBuilder.forTarget(target).usePlaintext().intercept(traceInterceptor).build();
+    }
+
     @Bean
     public FraudControlServiceGrpc.FraudControlServiceBlockingStub fraudBlockingStub(ManagedChannel fraudManagedChannel) {
         return FraudControlServiceGrpc.newBlockingStub(fraudManagedChannel);
@@ -35,5 +44,10 @@ public class GrpcClientConfig {
     @Bean
     public LimitControlServiceGrpc.LimitControlServiceBlockingStub limitBlockingStub(ManagedChannel limitManagedChannel) {
         return LimitControlServiceGrpc.newBlockingStub(limitManagedChannel);
+    }
+
+    @Bean
+    public AcquirerControlServiceGrpc.AcquirerControlServiceBlockingStub acquirerBlockingStub(ManagedChannel acquirerManagedChannel) {
+        return AcquirerControlServiceGrpc.newBlockingStub(acquirerManagedChannel);
     }
 }

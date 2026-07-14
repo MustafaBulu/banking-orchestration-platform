@@ -6,6 +6,7 @@ import com.paymentplatform.orchestration.command.application.port.out.FraudCheck
 import com.paymentplatform.orchestration.command.application.port.out.LimitCheckPort;
 import com.paymentplatform.orchestration.command.infrastructure.outbox.OutboxRelayWorker;
 import com.paymentplatform.orchestration.command.infrastructure.tracing.Traceparent;
+import com.paymentplatform.orchestration.command.support.DefaultAcquirerTestConfig;
 import io.micrometer.tracing.Span;
 import io.micrometer.tracing.Tracer;
 import org.apache.kafka.clients.admin.Admin;
@@ -20,6 +21,7 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
@@ -50,6 +52,7 @@ import static org.mockito.Mockito.when;
         "app.outbox.relay.poll-delay-ms=3600000"
 })
 @Testcontainers(disabledWithoutDocker = true)
+@Import(DefaultAcquirerTestConfig.class)
 class KafkaTracePropagationIntegrationTest {
 
     private static final String TOPIC = "payment.trace.probe";

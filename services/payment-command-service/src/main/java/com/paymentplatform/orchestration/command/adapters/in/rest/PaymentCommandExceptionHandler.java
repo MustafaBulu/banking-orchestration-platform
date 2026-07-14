@@ -1,5 +1,6 @@
 package com.paymentplatform.orchestration.command.adapters.in.rest;
 
+import com.paymentplatform.orchestration.command.application.saga.AcquirerDeclinedException;
 import com.paymentplatform.orchestration.command.domain.exception.PaymentRejectedException;
 import com.paymentplatform.orchestration.command.infrastructure.idempotency.IdempotencyConflictException;
 import com.paymentplatform.orchestration.command.infrastructure.idempotency.IdempotencyInProgressException;
@@ -15,6 +16,12 @@ public class PaymentCommandExceptionHandler {
     @ExceptionHandler(PaymentRejectedException.class)
     @ResponseStatus(HttpStatus.UNPROCESSABLE_CONTENT)
     public ErrorResponse handleRejected(PaymentRejectedException ex) {
+        return new ErrorResponse("PAYMENT_REJECTED", ex.getMessage());
+    }
+
+    @ExceptionHandler(AcquirerDeclinedException.class)
+    @ResponseStatus(HttpStatus.UNPROCESSABLE_CONTENT)
+    public ErrorResponse handleAcquirerDeclined(AcquirerDeclinedException ex) {
         return new ErrorResponse("PAYMENT_REJECTED", ex.getMessage());
     }
 

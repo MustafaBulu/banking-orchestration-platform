@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package orchestration.acquirer.v1;
+
+option java_package = "com.paymentplatform.orchestration.contracts.acquirer.v1";
+option java_multiple_files = true;
+
+service AcquirerControlService {
+  rpc Authorize (AcquirerAuthorizeRequest) returns (AcquirerOperationResponse);
+  rpc Capture (AcquirerCaptureRequest) returns (AcquirerOperationResponse);
+  rpc VoidAuthorization (AcquirerVoidRequest) returns (AcquirerOperationResponse);
+  rpc Refund (AcquirerRefundRequest) returns (AcquirerOperationResponse);
+  rpc GetStatus (AcquirerStatusRequest) returns (AcquirerOperationResponse);
+}
+
+enum AcquirerOutcome {
+  ACQUIRER_OUTCOME_UNSPECIFIED = 0;
+  APPROVED = 1;
+  DECLINED = 2;
+  UNKNOWN = 3;
+}
+
+enum AcquirerOperation {
+  ACQUIRER_OPERATION_UNSPECIFIED = 0;
+  AUTHORIZE = 1;
+  CAPTURE = 2;
+  VOID = 3;
+  REFUND = 4;
+}
+
+message AcquirerAuthorizeRequest {
+  string payment_id = 1;
+  string amount = 2;
+  string currency = 3;
+}
+
+message AcquirerCaptureRequest {
+  string payment_id = 1;
+  string amount = 2;
+  string currency = 3;
+}
+
+message AcquirerVoidRequest {
+  string payment_id = 1;
+}
+
+message AcquirerRefundRequest {
+  string payment_id = 1;
+  string amount = 2;
+  string currency = 3;
+}
+
+message AcquirerStatusRequest {
+  string payment_id = 1;
+  AcquirerOperation operation = 2;
+}
+
+message AcquirerOperationResponse {
+  AcquirerOutcome outcome = 1;
+  string reason_code = 2;
+  string acquirer_ref = 3;
+}

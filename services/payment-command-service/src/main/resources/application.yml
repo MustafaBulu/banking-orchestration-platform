@@ -24,6 +24,8 @@ app:
       target: ${FRAUD_GRPC_TARGET:localhost:9091}
     limit:
       target: ${LIMIT_GRPC_TARGET:localhost:9094}
+    acquirer:
+      target: ${ACQUIRER_GRPC_TARGET:localhost:9096}
   outbox:
     relay:
       enabled: ${OUTBOX_RELAY_ENABLED:true}

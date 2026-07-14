@@ -1,6 +1,7 @@
 package com.paymentplatform.orchestration.command.application.saga;
 
 import com.paymentplatform.orchestration.command.application.command.CreatePaymentCommand;
+import com.paymentplatform.orchestration.command.application.port.out.AcquirerPort;
 import com.paymentplatform.orchestration.command.application.port.out.FraudCheckPort;
 import com.paymentplatform.orchestration.command.application.port.out.LimitCheckPort;
 import com.paymentplatform.orchestration.command.application.port.out.PaymentEventStorePort;
@@ -125,6 +126,53 @@ class PaymentSagaOrchestratorTest {
                 .hasValueSatisfying(saga -> assertThat(saga.status()).isEqualTo(PaymentSagaStatus.COMPENSATED));
     }
 
+    @Test
+    void acquirerDeclineAtAuthorizeCompensatesWithoutRetrying() {
+        Fixtures fixtures = new Fixtures(false, 3);
+        fixtures.acquirerPort.authorizeOutcome = AcquirerPort.Outcome.DECLINED;
+
+        assertThatThrownBy(() -> fixtures.orchestrator.start(command("payment-1")))
+                .isInstanceOf(AcquirerDeclinedException.class);
+
+        assertThat(fixtures.eventStore.eventTypes("payment-1")).containsExactly("PaymentCreated");
+        assertThat(fixtures.acquirerPort.authorizeCalls).isEqualTo(1);
+        assertThat(fixtures.limitCheckPort.releaseCount).isEqualTo(1);
+        assertThat(fixtures.repository.findByPaymentId("payment-1"))
+                .hasValueSatisfying(saga -> assertThat(saga.status()).isEqualTo(PaymentSagaStatus.COMPENSATED));
+    }
+
+    @Test
+    void ambiguousCaptureRetriesThenVoidsAndReleases() {
+        Fixtures fixtures = new Fixtures(false, 2);
+        fixtures.acquirerPort.captureOutcome = AcquirerPort.Outcome.UNKNOWN;
+
+        assertThatThrownBy(() -> fixtures.orchestrator.start(command("payment-1")))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(fixtures.eventStore.eventTypes("payment-1"))
+                .containsExactly("PaymentCreated", "PaymentAuthorized", "PaymentVoided");
+        assertThat(fixtures.acquirerPort.captureCalls).isEqualTo(2);
+        assertThat(fixtures.acquirerPort.voidCalls).isEqualTo(1);
+        assertThat(fixtures.limitCheckPort.releaseCount).isEqualTo(1);
+        assertThat(fixtures.repository.findByPaymentId("payment-1"))
+                .hasValueSatisfying(saga -> assertThat(saga.status()).isEqualTo(PaymentSagaStatus.COMPENSATED));
+    }
+
+    @Test
+    void unconfirmedAcquirerVoidDoesNotFalselyCompleteCompensation() {
+        Fixtures fixtures = new Fixtures(true);
+        fixtures.acquirerPort.voidOutcome = AcquirerPort.Outcome.UNKNOWN;
+
+        assertThatThrownBy(() -> fixtures.orchestrator.start(command("payment-1")))
+                .isInstanceOf(RuntimeException.class);
+
+        assertThat(fixtures.eventStore.eventTypes("payment-1"))
+                .containsExactly("PaymentCreated", "PaymentAuthorized");
+        assertThat(fixtures.acquirerPort.voidCalls).isGreaterThanOrEqualTo(1);
+        assertThat(fixtures.repository.findByPaymentId("payment-1"))
+                .hasValueSatisfying(saga -> assertThat(saga.status()).isEqualTo(PaymentSagaStatus.FAILED));
+    }
+
     private CreatePaymentCommand command(String paymentId) {
         return new CreatePaymentCommand(paymentId, "customer-1", new BigDecimal("120.50"), "EUR");
     }
@@ -134,9 +182,14 @@ class PaymentSagaOrchestratorTest {
         private final InMemoryPaymentSagaRepository repository = new InMemoryPaymentSagaRepository();
         private final InMemoryPaymentEventStore eventStore = new InMemoryPaymentEventStore();
         private final FakeLimitCheckPort limitCheckPort = new FakeLimitCheckPort();
+        private final FakeAcquirerPort acquirerPort = new FakeAcquirerPort();
         private final PaymentSagaOrchestrator orchestrator;
 
         private Fixtures(boolean failCapture) {
+            this(failCapture, 1);
+        }
+
+        private Fixtures(boolean failCapture, int maxAttempts) {
             PaymentPersister persister = mock(PaymentPersister.class);
             doAnswer(invocation -> {
                 PaymentEvent event = invocation.getArgument(0);
@@ -156,9 +209,46 @@ class PaymentSagaOrchestratorTest {
                     persister,
                     fraudCheckPort,
                     limitCheckPort,
-                    new PaymentSagaProperties(1, 10, 0),
+                    acquirerPort,
+                    new PaymentSagaProperties(maxAttempts, 10, 0),
                     new SimpleMeterRegistry()
             );
+        }
+    }
+
+    private static class FakeAcquirerPort implements AcquirerPort {
+
+        private Outcome authorizeOutcome = Outcome.APPROVED;
+        private Outcome captureOutcome = Outcome.APPROVED;
+        private Outcome voidOutcome = Outcome.APPROVED;
+        private Outcome refundOutcome = Outcome.APPROVED;
+        private int authorizeCalls;
+        private int captureCalls;
+        private int voidCalls;
+        private int refundCalls;
+
+        @Override
+        public AcquirerResult authorize(String paymentId, Money money) {
+            authorizeCalls++;
+            return new AcquirerResult(authorizeOutcome, "R", "ref");
+        }
+
+        @Override
+        public AcquirerResult capture(String paymentId, Money money) {
+            captureCalls++;
+            return new AcquirerResult(captureOutcome, "R", "ref");
+        }
+
+        @Override
+        public AcquirerResult voidAuthorization(String paymentId) {
+            voidCalls++;
+            return new AcquirerResult(voidOutcome, "R", "ref");
+        }
+
+        @Override
+        public AcquirerResult refund(String paymentId, Money money) {
+            refundCalls++;
+            return new AcquirerResult(refundOutcome, "R", "ref");
         }
     }
 

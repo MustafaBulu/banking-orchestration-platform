@@ -37,12 +37,17 @@ The platform is organized as a Maven monorepo with independent Spring Boot servi
    - fraud check via `fraud-detection-service` gRPC
    - limit reservation via `limit-management-service` gRPC
 4. A persisted `PaymentSagaOrchestrator` records saga state and drives the payment lifecycle:
-   `PaymentCreated` -> `PaymentAuthorized` -> `PaymentCaptured`.
+   `PaymentCreated` -> `PaymentAuthorized` -> `PaymentCaptured`. The `Authorize` and `Capture`
+   steps are real remote calls to a **fallible acquirer** over gRPC before the matching local
+   lifecycle event is written, so a decline or an ambiguous "did it go through?" result is a genuine
+   saga concern rather than a guaranteed local transition.
 5. Each lifecycle event is written through the same atomic local transaction: append to PostgreSQL
    `event_store` and enqueue to PostgreSQL `outbox`.
 6. If a forward step fails after a limit was reserved, the saga runs explicit compensation:
-   `PaymentVoided` for an authorization hold, `PaymentRefunded` for a captured payment, and
-   `Release` to `limit-management-service`.
+   `PaymentVoided` for an authorization hold, `PaymentRefunded` for a captured payment, a
+   `VoidAuthorization` / `Refund` reversal to the acquirer, and `Release` to
+   `limit-management-service`. A hard acquirer decline is non-retryable and drives compensation
+   immediately; an ambiguous (unresolved) acquirer result is retried and then compensated.
 7. A scheduled saga recovery worker atomically claims stuck `STARTED` / `COMPENSATING` sagas and
    reconciles persisted events before retrying, then replays the idempotent forward or compensation
    path until the saga reaches a terminal state.
@@ -107,8 +112,16 @@ gRPC protobuf contracts are stored in `contracts/proto`.
 
 - `fraud-control.proto` — `Evaluate`
 - `limit-control.proto` — `Reserve` and `Release` (the compensating step for a rolled-back write)
+- `acquirer-control.proto` — `Authorize`, `Capture`, `VoidAuthorization`, `Refund`, and `GetStatus`
+  (the idempotent re-query used to resolve an ambiguous authorize/capture result)
 
 The `libs/contracts-grpc` module generates Java stubs from these contracts.
+
+The acquirer is currently a **test-scope simulator**, not a deployed service: the command service
+ships the real `AcquirerPort` + gRPC adapter (`app.grpc.acquirer.target`), and a controllable
+in-process acquirer stands in for the remote money-mover in the tests. Acquirer operations are keyed
+by `paymentId`, so a retried or re-queried call is idempotent and never double-authorizes or
+double-captures. Promoting the simulator to a deployed service is a later step.
 
 Kafka domain event contracts live in `libs/event-contracts`.
 
@@ -348,6 +361,15 @@ Docker while executing on Docker-equipped CI runners.
   authorization and releases the limit against real saga tables, a stuck started saga can continue to
   capture, a persisted capture with a stale pending step is reconciled before retry exhaustion, and a
   compensating saga can be recovered without double-release or double-voiding.
+- Fallible acquirer authorize/capture with ambiguity resolution — `AcquirerGrpcAdapterTest`
+  (payment-command-service): against a controllable in-process acquirer, an approve and a decline map
+  straight through; both a transient transport failure **and** a plain `UNKNOWN` response trigger an
+  idempotent `GetStatus` re-query (the "did it go through?" case), which either resolves the result or
+  stays `UNKNOWN`; and repeated authorize calls for the same `paymentId` commit exactly once.
+  `PaymentSagaOrchestratorTest` proves a decline compensates without retrying, an unresolved acquirer
+  result is retried and then voids the authorization and releases the limit, and a compensation
+  reversal that the acquirer does not confirm is **not** recorded as done (the saga fails visibly
+  instead of writing a false `PaymentVoided` / `PaymentRefunded`).
 - Limit reservation is compensated on failure — `ReservationCompensationIntegrationTest`
   (payment-command-service): when persistence fails after the limit was reserved, the command service
   releases the reservation and leaves no `event_store` or `outbox` row behind.
@@ -413,6 +435,9 @@ the money spine and stated honestly rather than spread thin to look uniform.
 
 - `payment-api-gateway` -> `payment-command-service`: request idempotency, durable saga state,
   lifecycle event-store + outbox writes, and the outbox relay to Kafka.
+- Fallible acquirer authorize/capture on the saga's remote money-mover step, with idempotent
+  ambiguity resolution and decline/void/refund compensation (the acquirer itself is a test-scope
+  simulator; see [Contracts](#contracts)).
 - `limit-management-service` reservation with compensation on a rolled-back write, backed by
   persistent leases and expiry cleanup.
 - `ledger-service`: idempotent lifecycle double-entry posting under real duplicate delivery, and

@@ -1,6 +1,7 @@
 package com.paymentplatform.orchestration.command.application.saga;
 
 import com.paymentplatform.orchestration.command.application.command.CreatePaymentCommand;
+import com.paymentplatform.orchestration.command.application.port.out.AcquirerPort;
 import com.paymentplatform.orchestration.command.application.port.out.FraudCheckPort;
 import com.paymentplatform.orchestration.command.application.port.out.LimitCheckPort;
 import com.paymentplatform.orchestration.command.application.port.out.PaymentEventStorePort;
@@ -29,6 +30,7 @@ public class PaymentSagaOrchestrator {
     private final PaymentPersister paymentPersister;
     private final FraudCheckPort fraudCheckPort;
     private final LimitCheckPort limitCheckPort;
+    private final AcquirerPort acquirerPort;
     private final PaymentSagaProperties properties;
     private final Counter reservationCompensatedCounter;
 
@@ -38,6 +40,7 @@ public class PaymentSagaOrchestrator {
             PaymentPersister paymentPersister,
             FraudCheckPort fraudCheckPort,
             LimitCheckPort limitCheckPort,
+            AcquirerPort acquirerPort,
             PaymentSagaProperties properties,
             MeterRegistry meterRegistry
     ) {
@@ -46,6 +49,7 @@ public class PaymentSagaOrchestrator {
         this.paymentPersister = paymentPersister;
         this.fraudCheckPort = fraudCheckPort;
         this.limitCheckPort = limitCheckPort;
+        this.acquirerPort = acquirerPort;
         this.properties = properties;
         this.reservationCompensatedCounter = Counter.builder("limit.reservation.compensated")
                 .description("Limit reservations released by saga compensation")
@@ -182,6 +186,16 @@ public class PaymentSagaOrchestrator {
                         truncate(ex.getMessage())
                 );
                 throw ex;
+            } catch (AcquirerDeclinedException ex) {
+                paymentSagaRepository.recordStep(
+                        saga.sagaId(),
+                        step,
+                        PaymentSagaStepStatus.FAILED,
+                        PaymentSagaCompensationStatus.NOT_REQUIRED,
+                        attempt,
+                        truncate(ex.getMessage())
+                );
+                throw ex;
             } catch (RuntimeException ex) {
                 paymentSagaRepository.recordStep(
                         saga.sagaId(),
@@ -262,6 +276,7 @@ public class PaymentSagaOrchestrator {
 
         PaymentAggregate payment = PaymentAggregate.rehydrate(events);
         if (payment.status() == PaymentStatus.CREATED) {
+            requireApproved(acquirerPort.authorize(saga.paymentId(), money(saga)));
             payment.authorize();
             paymentPersister.persist(payment.uncommittedEvents().getLast());
         }
@@ -270,8 +285,24 @@ public class PaymentSagaOrchestrator {
     private void capture(PaymentSaga saga) {
         PaymentAggregate payment = PaymentAggregate.rehydrate(paymentEventStorePort.load(saga.paymentId()));
         if (payment.status() == PaymentStatus.AUTHORIZED) {
+            requireApproved(acquirerPort.capture(saga.paymentId(), money(saga)));
             payment.capture();
             paymentPersister.persist(payment.uncommittedEvents().getLast());
+        }
+    }
+
+    private void requireApproved(AcquirerPort.AcquirerResult result) {
+        switch (result.outcome()) {
+            case APPROVED -> {
+            }
+            case DECLINED -> throw new AcquirerDeclinedException("Acquirer declined: " + result.reasonCode());
+            case UNKNOWN -> throw new IllegalStateException("Acquirer outcome unresolved: " + result.reasonCode());
+        }
+    }
+
+    private void requireReversed(AcquirerPort.AcquirerResult result) {
+        if (result.outcome() != AcquirerPort.Outcome.APPROVED) {
+            throw new IllegalStateException("Acquirer reversal not confirmed: " + result.reasonCode());
         }
     }
 
@@ -299,6 +330,7 @@ public class PaymentSagaOrchestrator {
         Map<PaymentSagaStepName, PaymentSagaStep> steps = steps(saga);
         if (payment.status() == PaymentStatus.CAPTURED
                 && !compensationDone(steps, PaymentSagaStepName.CAPTURE)) {
+            requireReversed(acquirerPort.refund(saga.paymentId(), money(saga)));
             payment.refund();
             paymentPersister.persist(payment.uncommittedEvents().getLast());
             paymentSagaRepository.recordStep(
@@ -314,6 +346,7 @@ public class PaymentSagaOrchestrator {
 
         if (payment.status() == PaymentStatus.AUTHORIZED
                 && !compensationDone(steps, PaymentSagaStepName.AUTHORIZE)) {
+            requireReversed(acquirerPort.voidAuthorization(saga.paymentId()));
             payment.voidAuthorization();
             paymentPersister.persist(payment.uncommittedEvents().getLast());
             paymentSagaRepository.recordStep(
